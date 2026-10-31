@@ -1,17 +1,19 @@
 [package]
-name = "play"
+name = "mediactl"
 version = "0.1.0"
 edition = "2024"
 description = "Agent-friendly CLI that plays YouTube videos in controllable native windows"
 
 [dependencies]
 anyhow = "1.0.104"
+base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
 include_dir = "0.7.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tao = "0.37.2"
 toml = "1.1.8"
+tungstenite = "0.30.0"
 url = "2.5.8"
 wry = "0.57.1"
 
@@ -19,3 +21,6 @@ wry = "0.57.1"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSGeometry"] }
 objc2-app-kit = { version = "0.3", features = ["NSScreen", "NSWindow", "NSResponder", "NSView"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

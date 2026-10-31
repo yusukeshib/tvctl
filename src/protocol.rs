@@ -31,6 +31,19 @@ pub enum Request {
     Close {
         id: String,
     },
+    /// Save a PNG of the player window's content to `path` (absolute).
+    Screenshot {
+        id: String,
+        path: String,
+    },
+    /// Open the service's login page in the Chrome profile; blocks until closed.
+    AuthLogin {
+        service: String,
+    },
+    /// Check login state (all services with a login when `service` is None).
+    AuthStatus {
+        service: Option<String>,
+    },
 }
 
 /// Actions executed by the plugin adapter (forwarded to JavaScript as-is).
@@ -47,6 +60,10 @@ pub enum PlayerAction {
     },
     /// `on`, `off`, `list`, or a language code such as `ja`.
     Subtitles {
+        lang: String,
+    },
+    /// Audio track: `list` or a language code such as `ja`.
+    Audio {
         lang: String,
     },
     Volume {
@@ -120,5 +137,139 @@ impl From<Result<serde_json::Value, String>> for Response {
                 error: Some(e),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Plugin adapters receive these objects verbatim; their shape is the contract.
+    #[test]
+    fn player_actions_match_the_plugin_contract() {
+        let cases = [
+            (PlayerAction::Status, json!({ "action": "status" })),
+            (PlayerAction::Play, json!({ "action": "play" })),
+            (PlayerAction::Pause, json!({ "action": "pause" })),
+            (PlayerAction::Toggle, json!({ "action": "toggle" })),
+            (
+                PlayerAction::Seek {
+                    seconds: -5.0,
+                    relative: true,
+                },
+                json!({ "action": "seek", "seconds": -5.0, "relative": true }),
+            ),
+            (
+                PlayerAction::Subtitles { lang: "ja".into() },
+                json!({ "action": "subtitles", "lang": "ja" }),
+            ),
+            (
+                PlayerAction::Audio {
+                    lang: "list".into(),
+                },
+                json!({ "action": "audio", "lang": "list" }),
+            ),
+            (
+                PlayerAction::Volume {
+                    level: Some(5),
+                    muted: None,
+                },
+                json!({ "action": "volume", "level": 5, "muted": null }),
+            ),
+            (
+                PlayerAction::Speed { rate: 2.0 },
+                json!({ "action": "speed", "rate": 2.0 }),
+            ),
+            (
+                PlayerAction::Quality {
+                    level: "hd720".into(),
+                },
+                json!({ "action": "quality", "level": "hd720" }),
+            ),
+        ];
+        for (action, expected) in cases {
+            let v = serde_json::to_value(&action).unwrap();
+            assert_eq!(v, expected);
+            let back: PlayerAction = serde_json::from_value(v.clone()).unwrap();
+            assert_eq!(serde_json::to_value(back).unwrap(), v);
+        }
+    }
+
+    #[test]
+    fn requests_round_trip() {
+        let reqs = [
+            Request::Ping,
+            Request::Shutdown,
+            Request::List,
+            Request::Close { id: "1".into() },
+            Request::Screenshot {
+                id: "1".into(),
+                path: "/tmp/x.png".into(),
+            },
+            Request::AuthLogin {
+                service: "youtube".into(),
+            },
+            Request::AuthStatus { service: None },
+            Request::Window {
+                id: "1".into(),
+                opts: WindowOpts {
+                    layout: Some(Layout::TopRight),
+                    ..Default::default()
+                },
+            },
+        ];
+        for r in reqs {
+            let v = serde_json::to_value(&r).unwrap();
+            let back: Request = serde_json::from_value(v.clone()).unwrap();
+            assert_eq!(serde_json::to_value(back).unwrap(), v);
+        }
+        assert!(serde_json::from_str::<Request>("{\"cmd\":\"explode\"}").is_err());
+    }
+
+    #[test]
+    fn responses() {
+        let ok = serde_json::to_value(Response::from(Ok(json!(1)))).unwrap();
+        assert_eq!(ok, json!({ "ok": true, "result": 1 }));
+        let err = serde_json::to_value(Response::from(Err("bad".to_string()))).unwrap();
+        assert_eq!(err, json!({ "ok": false, "error": "bad" }));
+    }
+
+    #[test]
+    fn switches_and_geometry_flags() {
+        assert!(Switch::On.resolve(false));
+        assert!(!Switch::Off.resolve(true));
+        assert!(Switch::Toggle.resolve(false));
+        assert!(!Switch::Toggle.resolve(true));
+        assert!(!WindowOpts::default().changes_geometry());
+        assert!(
+            !WindowOpts {
+                fullscreen: Some(Switch::On),
+                on_top: Some(Switch::On),
+                ..Default::default()
+            }
+            .changes_geometry()
+        );
+        assert!(
+            WindowOpts {
+                size: Some((1.0, 1.0)),
+                ..Default::default()
+            }
+            .changes_geometry()
+        );
+        assert!(
+            WindowOpts {
+                position: Some((1.0, 1.0)),
+                ..Default::default()
+            }
+            .changes_geometry()
+        );
+        assert!(
+            WindowOpts {
+                layout: Some(Layout::Left),
+                ..Default::default()
+            }
+            .changes_geometry()
+        );
     }
 }

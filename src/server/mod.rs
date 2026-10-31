@@ -1,6 +1,7 @@
 //! The player server. Accepts requests on a Unix socket and routes them to the
 //! backend that owns each player. Plugins decide which backend a URL uses.
 
+mod chrome;
 mod webview;
 
 use std::collections::HashMap;
@@ -13,8 +14,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
+use crate::auth;
 use crate::client;
-use crate::plugin::{BackendKind, Registry};
+use crate::plugin::{BackendKind, Plugin, Registry};
 use crate::protocol::{Request, Response};
 
 pub type Reply = std::sync::mpsc::Sender<Result<Value, String>>;
@@ -55,6 +57,11 @@ struct Router {
     registry: Arc<Registry>,
     players: Arc<Players>,
     webview: webview::Handle,
+    chrome: chrome::Backend,
+}
+
+fn err(e: anyhow::Error) -> String {
+    format!("{e:#}")
 }
 
 impl Router {
@@ -66,14 +73,17 @@ impl Router {
                 "log": client::log_path(),
                 "players": self.players.count(),
             })),
-            Request::Shutdown => self
-                .webview
-                .call(webview::Command::Shutdown, Duration::from_secs(5)),
+            Request::Shutdown => {
+                self.chrome.shutdown();
+                self.webview
+                    .call(webview::Command::Shutdown, Duration::from_secs(5))
+            }
             Request::List => {
                 let mut list = self
                     .webview
                     .call(webview::Command::List, Duration::from_secs(5))?;
                 if let Some(items) = list.as_array_mut() {
+                    items.extend(self.chrome.list());
                     items.sort_by_key(|v| v["id"].as_str().and_then(|s| s.parse::<u64>().ok()));
                 }
                 Ok(json!({ "players": list }))
@@ -86,8 +96,8 @@ impl Router {
                 window,
                 backend,
             } => {
-                let (plugin, url) = self.registry.for_url(&url).map_err(|e| format!("{e:#}"))?;
-                let backend = choose_backend(&plugin.manifest.backends, backend)?;
+                let (plugin, url) = self.registry.for_url(&url).map_err(err)?;
+                let backend = choose_backend(plugin, backend, auth::is_logged_in(plugin.name()))?;
                 let action = json!({
                     "action": "open",
                     "url": url.as_str(),
@@ -95,62 +105,119 @@ impl Router {
                     "paused": paused,
                     "subtitles": subtitles,
                 });
+                let id = self.players.allocate(backend);
                 match backend {
-                    BackendKind::Webview => {
-                        // On failure the window stays open (showing the error) and keeps its id.
-                        let id = self.players.allocate(backend);
-                        let cmd = webview::Command::Open {
+                    // On failure the window stays open (showing the error) and keeps its id.
+                    BackendKind::Webview => self.webview.call(
+                        webview::Command::Open {
                             id,
                             plugin: Box::new(plugin.clone()),
                             action,
                             window: Box::new(window),
-                        };
-                        self.webview.call(cmd, Duration::from_secs(40))
+                        },
+                        Duration::from_secs(40),
+                    ),
+                    BackendKind::Chrome => {
+                        self.chrome.open(&id, plugin, action, &window).map_err(err)
                     }
-                    BackendKind::Chrome => Err("the chrome backend is not available yet".into()),
                 }
             }
-            Request::Player { id, action } => match self.players.owner(&id)? {
-                BackendKind::Webview => self.webview.call(
-                    webview::Command::Player {
-                        id,
-                        action: serde_json::to_value(action).expect("serializable"),
-                    },
-                    Duration::from_secs(15),
-                ),
-                BackendKind::Chrome => unreachable!("no chrome players yet"),
-            },
+            Request::Player { id, action } => {
+                let action = serde_json::to_value(action).expect("serializable");
+                match self.players.owner(&id)? {
+                    BackendKind::Webview => self.webview.call(
+                        webview::Command::Player { id, action },
+                        Duration::from_secs(15),
+                    ),
+                    BackendKind::Chrome => self.chrome.action(&id, action).map_err(err),
+                }
+            }
             Request::Window { id, opts } => match self.players.owner(&id)? {
                 BackendKind::Webview => self.webview.call(
                     webview::Command::Window { id, opts },
                     Duration::from_secs(15),
                 ),
-                BackendKind::Chrome => unreachable!("no chrome players yet"),
+                BackendKind::Chrome => self.chrome.window(&id, &opts).map_err(err),
             },
             Request::Close { id } => match self.players.owner(&id)? {
                 BackendKind::Webview => self
                     .webview
                     .call(webview::Command::Close { id }, Duration::from_secs(5)),
-                BackendKind::Chrome => unreachable!("no chrome players yet"),
+                BackendKind::Chrome => self.chrome.close(&id).map_err(err),
             },
+            Request::Screenshot { id, path } => match self.players.owner(&id)? {
+                BackendKind::Webview => self.webview.call(
+                    webview::Command::Screenshot { id, path },
+                    Duration::from_secs(15),
+                ),
+                BackendKind::Chrome => self.chrome.screenshot(&id, &path).map_err(err),
+            },
+            Request::AuthLogin { service } => {
+                self.chrome.login(self.auth_plugin(&service)?).map_err(err)
+            }
+            Request::AuthStatus { service } => {
+                let plugins: Vec<&Plugin> = match service {
+                    Some(s) => vec![self.auth_plugin(&s)?],
+                    None => self
+                        .registry
+                        .plugins()
+                        .iter()
+                        .filter(|p| p.manifest.auth.is_some())
+                        .collect(),
+                };
+                let statuses: Result<Vec<Value>, String> = plugins
+                    .into_iter()
+                    .map(|p| self.chrome.login_status(p).map_err(err))
+                    .collect();
+                Ok(json!({ "services": statuses? }))
+            }
         }
+    }
+
+    fn auth_plugin(&self, name: &str) -> Result<&Plugin, String> {
+        let plugin = self
+            .registry
+            .get(name)
+            .ok_or_else(|| format!("no plugin named {name:?}"))?;
+        if plugin.manifest.auth.is_none() {
+            return Err(format!("{name} does not support login"));
+        }
+        Ok(plugin)
     }
 }
 
+/// Forced backend if given; else the plugin's logged-in preference when the user
+/// has logged in; else the plugin's first backend.
 fn choose_backend(
-    supported: &[BackendKind],
+    plugin: &Plugin,
     forced: Option<BackendKind>,
+    logged_in: bool,
 ) -> Result<BackendKind, String> {
-    match forced {
-        Some(b) if supported.contains(&b) => Ok(b),
-        Some(b) => Err(format!(
-            "this plugin does not support the {b:?} backend (supported: {supported:?})"
-        )),
-        None => supported
-            .first()
-            .copied()
-            .ok_or_else(|| "plugin has no backends".into()),
+    let supported = &plugin.manifest.backends;
+    if let Some(b) = forced {
+        return if supported.contains(&b) {
+            Ok(b)
+        } else {
+            Err(format!(
+                "{} does not support the {b:?} backend (supported: {supported:?})",
+                plugin.name()
+            ))
+        };
     }
+    if let Some(b) = plugin
+        .manifest
+        .auth
+        .as_ref()
+        .and_then(|a| a.prefer_backend_when_logged_in)
+        && supported.contains(&b)
+        && logged_in
+    {
+        return Ok(b);
+    }
+    supported
+        .first()
+        .copied()
+        .ok_or_else(|| "plugin has no backends".into())
 }
 
 pub fn run() -> Result<()> {
@@ -165,10 +232,12 @@ pub fn run() -> Result<()> {
     let players = Arc::new(Players::default());
 
     let (event_loop, webview) = webview::create(registry.clone(), players.clone())?;
+    let chrome = chrome::Backend::new(players.clone());
     let router = Arc::new(Router {
         registry,
         players,
         webview,
+        chrome,
     });
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
@@ -177,7 +246,7 @@ pub fn run() -> Result<()> {
         }
     });
     eprintln!(
-        "play server listening on {} (pid {})",
+        "mediactl server listening on {} (pid {})",
         socket.display(),
         std::process::id()
     );
@@ -198,4 +267,86 @@ fn handle_connection(stream: UnixStream, router: &Router) {
     let mut out = serde_json::to_string(&Response::from(result)).expect("serializable");
     out.push('\n');
     let _ = stream.write_all(out.as_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn plugin(toml: &str, files: &[&str]) -> Plugin {
+        let mut m: BTreeMap<String, String> = files
+            .iter()
+            .map(|f| (f.to_string(), String::new()))
+            .collect();
+        m.insert("plugin.toml".into(), toml.into());
+        Plugin::from_files(m, "test".into()).unwrap()
+    }
+
+    const BOTH: &str =
+        "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\", \"chrome\"]\n";
+    const AUTH: &str = "[auth]\nlogin_url = \"https://x.com/l\"\ncookie_url = \"https://x.com\"\nlogged_in_cookies = [\"s\"]\nprefer_backend_when_logged_in = \"chrome\"\n";
+
+    #[test]
+    fn backend_defaults_to_first() {
+        let p = plugin(BOTH, &["webview.html", "chrome.js"]);
+        assert_eq!(choose_backend(&p, None, false), Ok(BackendKind::Webview));
+        // Without an [auth] preference, login state does not matter.
+        assert_eq!(choose_backend(&p, None, true), Ok(BackendKind::Webview));
+    }
+
+    #[test]
+    fn backend_follows_login_preference() {
+        let p = plugin(&format!("{BOTH}{AUTH}"), &["webview.html", "chrome.js"]);
+        assert_eq!(choose_backend(&p, None, false), Ok(BackendKind::Webview));
+        assert_eq!(choose_backend(&p, None, true), Ok(BackendKind::Chrome));
+        // A forced backend wins over the preference.
+        assert_eq!(
+            choose_backend(&p, Some(BackendKind::Webview), true),
+            Ok(BackendKind::Webview)
+        );
+    }
+
+    #[test]
+    fn forced_backend_must_be_supported() {
+        let p = plugin(
+            "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\"]\n",
+            &["webview.html"],
+        );
+        assert_eq!(
+            choose_backend(&p, Some(BackendKind::Webview), false),
+            Ok(BackendKind::Webview)
+        );
+        let e = choose_backend(&p, Some(BackendKind::Chrome), false).unwrap_err();
+        assert!(e.contains("does not support"), "{e}");
+    }
+
+    #[test]
+    fn builtin_youtube_prefers_chrome_when_logged_in() {
+        let r = Registry::load().unwrap();
+        let yt = r.get("youtube").unwrap();
+        assert_eq!(choose_backend(yt, None, false), Ok(BackendKind::Webview));
+        assert_eq!(choose_backend(yt, None, true), Ok(BackendKind::Chrome));
+    }
+
+    #[test]
+    fn player_ids_are_unique_and_owned() {
+        let players = Players::default();
+        let a = players.allocate(BackendKind::Webview);
+        let b = players.allocate(BackendKind::Chrome);
+        assert_ne!(a, b);
+        assert_eq!(players.owner(&a), Ok(BackendKind::Webview));
+        assert_eq!(players.owner(&b), Ok(BackendKind::Chrome));
+        assert_eq!(players.count(), 2);
+        players.remove(&a);
+        let e = players.owner(&a).unwrap_err();
+        assert!(
+            e.contains("no player") && e.contains(&format!("{b:?}")),
+            "{e}"
+        );
+        assert_eq!(players.count(), 1);
+        // Ids are never reused.
+        let c = players.allocate(BackendKind::Webview);
+        assert!(c != a && c != b);
+    }
 }

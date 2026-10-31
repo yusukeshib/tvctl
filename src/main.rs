@@ -1,3 +1,5 @@
+mod auth;
+mod cdp;
 mod client;
 mod layout;
 mod plugin;
@@ -15,10 +17,10 @@ use crate::timeparse::Seek;
 
 /// Play videos (YouTube, ...) in windows and control them from the command line.
 ///
-/// Each supported service is a plugin (`play plugins` lists them).
+/// Each supported service is a plugin (`mediactl plugins` lists them).
 ///
-/// Start the server once (`play server up`), open a video (`play open URL`, which
-/// prints the new player's `id`), then control it with `play <command> <ID> ...`.
+/// Start the server once (`mediactl server up`), open a video (`mediactl open URL`, which
+/// prints the new player's `id`), then control it with `mediactl <command> <ID> ...`.
 /// Every command prints JSON to stdout; errors go to stderr with exit code 1.
 #[derive(Parser)]
 #[command(version)]
@@ -36,7 +38,7 @@ enum Cmd {
     },
     /// Open a URL in a new player window and print its id and status.
     Open {
-        /// Video URL of a supported service (see `play plugins`).
+        /// Video URL of a supported service (see `mediactl plugins`).
         url: String,
         /// Force a backend instead of the plugin's default.
         #[arg(long, value_enum)]
@@ -58,6 +60,11 @@ enum Cmd {
         /// Keep the window above other windows.
         #[arg(long)]
         on_top: bool,
+    },
+    /// Log in to services in mediactl's Chrome profile (enables logged-in playback).
+    Auth {
+        #[command(subcommand)]
+        action: AuthCmd,
     },
     /// List open players.
     List,
@@ -92,6 +99,8 @@ enum Cmd {
     /// Subtitles: `on`, `off`, `list`, or a language code (e.g. `ja` for Japanese;
     /// auto-translated when the video has no track in that language).
     Subtitles { id: String, mode: String },
+    /// Audio track: `list` or a language code (e.g. `ja` for Japanese dubbing).
+    Audio { id: String, lang: String },
     /// Set volume (0-100).
     Volume {
         id: String,
@@ -130,6 +139,11 @@ enum Cmd {
     },
     /// Close a player window.
     Close { id: String },
+    /// Save a PNG of what the player window shows (works when the window is covered).
+    Screenshot {
+        id: String,
+        path: std::path::PathBuf,
+    },
     #[command(name = "__serve", hide = true)]
     Serve,
 }
@@ -142,6 +156,15 @@ enum ServerCmd {
     Down,
     /// Show whether the server is running.
     Status,
+}
+
+#[derive(Subcommand)]
+enum AuthCmd {
+    /// Open the service's login page in mediactl's Chrome profile. Sign in, then
+    /// quit that Chrome (Cmd+Q); prints the resulting login state.
+    Login { service: String },
+    /// Show login state for one or all services.
+    Status { service: Option<String> },
 }
 
 #[derive(Args)]
@@ -177,26 +200,28 @@ fn seek_request(id: String, seek: Seek) -> Request {
     player(id, PlayerAction::Seek { seconds, relative })
 }
 
-fn run(cmd: Cmd) -> Result<Value> {
+/// What a command does: something local, or one request to the server.
+#[derive(Debug)]
+enum Plan {
+    Serve,
+    ServerUp,
+    ServerDown,
+    ServerStatus,
+    Plugins,
+    Remote(Request),
+}
+
+fn plan(cmd: Cmd) -> Result<Plan> {
     let req = match cmd {
-        Cmd::Serve => {
-            server::run()?;
-            return Ok(Value::Null);
-        }
+        Cmd::Serve => return Ok(Plan::Serve),
         Cmd::Server { action } => {
-            return match action {
-                ServerCmd::Up => client::server_up(),
-                ServerCmd::Down => client::server_down(),
-                ServerCmd::Status => client::server_status(),
-            };
+            return Ok(match action {
+                ServerCmd::Up => Plan::ServerUp,
+                ServerCmd::Down => Plan::ServerDown,
+                ServerCmd::Status => Plan::ServerStatus,
+            });
         }
-        Cmd::Plugins => {
-            let registry = plugin::Registry::load()?;
-            return Ok(json!({
-                "external_dir": plugin::external_dir(),
-                "plugins": registry.plugins(),
-            }));
-        }
+        Cmd::Plugins => return Ok(Plan::Plugins),
         Cmd::Open {
             url,
             backend,
@@ -223,7 +248,12 @@ fn run(cmd: Cmd) -> Result<Value> {
                 },
             }
         }
+        Cmd::Auth { action } => match action {
+            AuthCmd::Login { service } => Request::AuthLogin { service },
+            AuthCmd::Status { service } => Request::AuthStatus { service },
+        },
         Cmd::List => Request::List,
+        Cmd::Audio { id, lang } => player(id, PlayerAction::Audio { lang }),
         Cmd::Status { id } => player(id, PlayerAction::Status),
         Cmd::Play { id } => player(id, PlayerAction::Play),
         Cmd::Pause { id } => player(id, PlayerAction::Pause),
@@ -287,8 +317,44 @@ fn run(cmd: Cmd) -> Result<Value> {
             },
         },
         Cmd::Close { id } => Request::Close { id },
+        Cmd::Screenshot { id, path } => {
+            // The server has a different working directory; send an absolute path.
+            let path = std::path::absolute(&path)?;
+            Request::Screenshot {
+                id,
+                path: path.to_string_lossy().into_owned(),
+            }
+        }
     };
-    client::send(&req)
+    Ok(Plan::Remote(req))
+}
+
+fn run(cmd: Cmd) -> Result<Value> {
+    match plan(cmd)? {
+        Plan::Serve => {
+            server::run()?;
+            Ok(Value::Null)
+        }
+        Plan::ServerUp => client::server_up(),
+        Plan::ServerDown => client::server_down(),
+        Plan::ServerStatus => client::server_status(),
+        Plan::Plugins => {
+            let registry = plugin::Registry::load()?;
+            Ok(json!({
+                "external_dir": plugin::external_dir(),
+                "plugins": registry.plugins(),
+            }))
+        }
+        Plan::Remote(req) => {
+            if let Request::AuthLogin { service } = &req {
+                eprintln!(
+                    "Sign in to {service} in the Chrome window that opens, then quit that Chrome (Cmd+Q) \
+                     (for some services, closing the login window is enough)."
+                );
+            }
+            client::send(&req)
+        }
+    }
 }
 
 fn main() {
@@ -306,5 +372,253 @@ fn main() {
             eprintln!("error: {e:#}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parses a command line and returns the request JSON sent to the server.
+    fn req(args: &[&str]) -> Value {
+        let mut argv = vec!["mediactl"];
+        argv.extend_from_slice(args);
+        let cli = Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+        match plan(cli.command).unwrap_or_else(|e| panic!("{args:?}: {e}")) {
+            Plan::Remote(r) => serde_json::to_value(r).unwrap(),
+            other => panic!("{args:?}: expected a remote request, got {other:?}"),
+        }
+    }
+
+    fn rejects(args: &[&str]) {
+        let mut argv = vec!["mediactl"];
+        argv.extend_from_slice(args);
+        let ok = Cli::try_parse_from(argv)
+            .map(|c| plan(c.command).is_ok())
+            .unwrap_or(false);
+        assert!(!ok, "{args:?} should be rejected");
+    }
+
+    fn action(id: &str, action: Value) -> Value {
+        json!({ "cmd": "player", "id": id, "action": action })
+    }
+
+    #[test]
+    fn local_commands() {
+        for (args, expect) in [
+            (vec!["server", "up"], "ServerUp"),
+            (vec!["server", "down"], "ServerDown"),
+            (vec!["server", "status"], "ServerStatus"),
+            (vec!["plugins"], "Plugins"),
+            (vec!["__serve"], "Serve"),
+        ] {
+            let mut argv = vec!["mediactl"];
+            argv.extend(args.iter());
+            let p = plan(Cli::try_parse_from(argv).unwrap().command).unwrap();
+            assert_eq!(format!("{p:?}"), expect);
+        }
+    }
+
+    #[test]
+    fn open() {
+        assert_eq!(
+            req(&["open", "https://youtu.be/x"]),
+            json!({
+                "cmd": "open", "url": "https://youtu.be/x", "backend": null, "start": null,
+                "paused": false, "subtitles": null,
+                "window": { "size": null, "position": null, "layout": null, "fullscreen": null, "on_top": null },
+            })
+        );
+        assert_eq!(
+            req(&[
+                "open",
+                "u",
+                "--backend",
+                "chrome",
+                "--start",
+                "1:30",
+                "--paused",
+                "--subtitles",
+                "ja",
+                "--size",
+                "640x360",
+                "--position",
+                "10,20",
+                "--layout",
+                "bottom-right",
+                "--fullscreen",
+                "--on-top",
+            ]),
+            json!({
+                "cmd": "open", "url": "u", "backend": "chrome", "start": 90.0, "paused": true, "subtitles": "ja",
+                "window": { "size": [640.0, 360.0], "position": [10.0, 20.0], "layout": "bottom-right",
+                            "fullscreen": "on", "on_top": "on" },
+            })
+        );
+        rejects(&["open"]);
+        rejects(&["open", "u", "--start", "abc"]);
+        rejects(&["open", "u", "--size", "640"]);
+        rejects(&["open", "u", "--position", "1x2"]);
+        rejects(&["open", "u", "--layout", "middle"]);
+        rejects(&["open", "u", "--backend", "firefox"]);
+    }
+
+    #[test]
+    fn playback() {
+        assert_eq!(
+            req(&["status", "1"]),
+            action("1", json!({ "action": "status" }))
+        );
+        assert_eq!(
+            req(&["play", "1"]),
+            action("1", json!({ "action": "play" }))
+        );
+        assert_eq!(
+            req(&["pause", "2"]),
+            action("2", json!({ "action": "pause" }))
+        );
+        assert_eq!(
+            req(&["toggle", "3"]),
+            action("3", json!({ "action": "toggle" }))
+        );
+        rejects(&["play"]);
+    }
+
+    #[test]
+    fn seeking() {
+        let seek = |s: f64, r: bool| {
+            action(
+                "1",
+                json!({ "action": "seek", "seconds": s, "relative": r }),
+            )
+        };
+        assert_eq!(req(&["seek", "1", "90"]), seek(90.0, false));
+        assert_eq!(req(&["seek", "1", "1:02:03"]), seek(3723.0, false));
+        assert_eq!(req(&["seek", "1", "+10"]), seek(10.0, true));
+        assert_eq!(req(&["seek", "1", "-1m"]), seek(-60.0, true));
+        assert_eq!(req(&["forward", "1"]), seek(10.0, true));
+        assert_eq!(req(&["forward", "1", "30"]), seek(30.0, true));
+        assert_eq!(req(&["back", "1"]), seek(-10.0, true));
+        assert_eq!(req(&["back", "1", "1:00"]), seek(-60.0, true));
+        rejects(&["seek", "1", "soon"]);
+        rejects(&["forward", "1", "-5"]);
+    }
+
+    #[test]
+    fn tracks_and_audio_settings() {
+        assert_eq!(
+            req(&["subtitles", "1", "ja"]),
+            action("1", json!({ "action": "subtitles", "lang": "ja" }))
+        );
+        assert_eq!(
+            req(&["subtitles", "1", "off"]),
+            action("1", json!({ "action": "subtitles", "lang": "off" }))
+        );
+        assert_eq!(
+            req(&["audio", "1", "list"]),
+            action("1", json!({ "action": "audio", "lang": "list" }))
+        );
+        assert_eq!(
+            req(&["quality", "1", "hd1080"]),
+            action("1", json!({ "action": "quality", "level": "hd1080" }))
+        );
+        rejects(&["quality", "1", "8k"]);
+        assert_eq!(
+            req(&["volume", "1", "30"]),
+            action(
+                "1",
+                json!({ "action": "volume", "level": 30, "muted": null })
+            )
+        );
+        rejects(&["volume", "1", "101"]);
+        assert_eq!(
+            req(&["mute", "1"]),
+            action(
+                "1",
+                json!({ "action": "volume", "level": null, "muted": true })
+            )
+        );
+        assert_eq!(
+            req(&["unmute", "1"]),
+            action(
+                "1",
+                json!({ "action": "volume", "level": null, "muted": false })
+            )
+        );
+        assert_eq!(
+            req(&["speed", "1", "1.5"]),
+            action("1", json!({ "action": "speed", "rate": 1.5 }))
+        );
+        rejects(&["speed", "1", "0"]);
+        rejects(&["speed", "1", "32"]);
+    }
+
+    #[test]
+    fn window_commands() {
+        let opts = |v: Value| {
+            let mut o = json!({ "size": null, "position": null, "layout": null, "fullscreen": null, "on_top": null });
+            for (k, val) in v.as_object().unwrap() {
+                o[k] = val.clone();
+            }
+            o
+        };
+        assert_eq!(
+            req(&["window", "1", "--size", "800x450", "--position", "5,6"]),
+            json!({ "cmd": "window", "id": "1", "opts": opts(json!({ "size": [800.0, 450.0], "position": [5.0, 6.0] })) })
+        );
+        for l in [
+            "left",
+            "right",
+            "top",
+            "bottom",
+            "top-left",
+            "top-right",
+            "bottom-left",
+            "bottom-right",
+            "center",
+            "maximize",
+        ] {
+            assert_eq!(
+                req(&["window", "1", "--layout", l]),
+                json!({ "cmd": "window", "id": "1", "opts": opts(json!({ "layout": l })) })
+            );
+        }
+        assert_eq!(
+            req(&["window", "1", "--fullscreen", "off", "--on-top", "toggle"]),
+            json!({ "cmd": "window", "id": "1", "opts": opts(json!({ "fullscreen": "off", "on_top": "toggle" })) })
+        );
+        assert_eq!(
+            req(&["fullscreen", "1"]),
+            json!({ "cmd": "window", "id": "1", "opts": opts(json!({ "fullscreen": "toggle" })) })
+        );
+        assert_eq!(
+            req(&["fullscreen", "1", "on"]),
+            json!({ "cmd": "window", "id": "1", "opts": opts(json!({ "fullscreen": "on" })) })
+        );
+        rejects(&["fullscreen", "1", "maybe"]);
+    }
+
+    #[test]
+    fn management_commands() {
+        assert_eq!(req(&["list"]), json!({ "cmd": "list" }));
+        assert_eq!(req(&["close", "4"]), json!({ "cmd": "close", "id": "4" }));
+        assert_eq!(
+            req(&["auth", "login", "youtube"]),
+            json!({ "cmd": "auth_login", "service": "youtube" })
+        );
+        assert_eq!(
+            req(&["auth", "status"]),
+            json!({ "cmd": "auth_status", "service": null })
+        );
+        assert_eq!(
+            req(&["auth", "status", "netflix"]),
+            json!({ "cmd": "auth_status", "service": "netflix" })
+        );
+        let shot = req(&["screenshot", "1", "shot.png"]);
+        let path = shot["path"].as_str().unwrap();
+        assert!(
+            std::path::Path::new(path).is_absolute() && path.ends_with("shot.png"),
+            "{path}"
+        );
     }
 }

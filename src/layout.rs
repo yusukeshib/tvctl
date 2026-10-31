@@ -166,4 +166,79 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn every_region_preset() {
+        let d = (0.0, 0.0);
+        let c = |l| compute(l, WA, None, (100.0, 100.0), d);
+        let r = |x, y, width, height| Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+        assert_eq!(c(Layout::Left), r(0.0, 25.0, 800.0, 1000.0));
+        assert_eq!(c(Layout::Right), r(800.0, 25.0, 800.0, 1000.0));
+        assert_eq!(c(Layout::Top), r(0.0, 25.0, 1600.0, 500.0));
+        assert_eq!(c(Layout::Bottom), r(0.0, 525.0, 1600.0, 500.0));
+        assert_eq!(c(Layout::TopLeft), r(0.0, 25.0, 800.0, 500.0));
+        assert_eq!(c(Layout::TopRight), r(800.0, 25.0, 800.0, 500.0));
+        assert_eq!(c(Layout::BottomLeft), r(0.0, 525.0, 800.0, 500.0));
+        assert_eq!(c(Layout::BottomRight), r(800.0, 525.0, 800.0, 500.0));
+        assert_eq!(c(Layout::Maximize), WA);
+        assert_eq!(c(Layout::Center), r(750.0, 475.0, 100.0, 100.0));
+    }
+
+    #[test]
+    fn every_anchor_with_explicit_size() {
+        let a = |l| compute(l, WA, Some((400.0, 200.0)), (0.0, 0.0), (0.0, 0.0));
+        let at = |x, y| Rect {
+            x,
+            y,
+            width: 400.0,
+            height: 200.0,
+        };
+        assert_eq!(a(Layout::Left), at(0.0, 425.0));
+        assert_eq!(a(Layout::Right), at(1200.0, 425.0));
+        assert_eq!(a(Layout::Top), at(600.0, 25.0));
+        assert_eq!(a(Layout::Bottom), at(600.0, 825.0));
+        assert_eq!(a(Layout::TopLeft), at(0.0, 25.0));
+        assert_eq!(a(Layout::TopRight), at(1200.0, 25.0));
+        assert_eq!(a(Layout::BottomLeft), at(0.0, 825.0));
+        assert_eq!(a(Layout::BottomRight), at(1200.0, 825.0));
+        assert_eq!(a(Layout::Center), at(600.0, 425.0));
+        assert_eq!(a(Layout::Maximize), at(600.0, 425.0));
+    }
+
+    #[test]
+    fn oversized_windows_are_clamped_to_the_work_area() {
+        let r = compute(
+            Layout::TopLeft,
+            WA,
+            Some((5000.0, 5000.0)),
+            (0.0, 0.0),
+            (0.0, 28.0),
+        );
+        assert_eq!(r, WA);
+    }
+
+    #[test]
+    fn non_zero_work_area_origin() {
+        let wa = Rect {
+            x: -1920.0,
+            y: 100.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        let r = compute(Layout::Right, wa, None, (0.0, 0.0), (0.0, 0.0));
+        assert_eq!(
+            r,
+            Rect {
+                x: -960.0,
+                y: 100.0,
+                width: 960.0,
+                height: 1080.0
+            }
+        );
+    }
 }

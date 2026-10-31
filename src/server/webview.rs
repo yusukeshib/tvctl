@@ -2,7 +2,7 @@
 //!
 //! Each player is a window whose WebView loads the plugin's `webview.html` from a
 //! loopback HTTP server (so embeds get a real origin) and runs the plugin's
-//! `window.__play.run(action)` through a small host bridge.
+//! `window.__mediactl.run(action)` through a small host bridge.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -28,20 +28,20 @@ use crate::layout::{self, Rect};
 use crate::plugin::{Plugin, Registry};
 use crate::protocol::{Switch, WindowOpts};
 
-/// Main-frame bridge between the host and the plugin's `window.__play`.
+/// Main-frame bridge between the host and the plugin's `window.__mediactl`.
 const HOST_BRIDGE: &str = r#"(() => {
-  if (window.__playHost) return;
+  if (window.__mediactlHost) return;
   const post = (m) => window.ipc.postMessage(JSON.stringify(m));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  window.__playHost = {
+  window.__mediactlHost = {
     run: async (req, action) => {
       try {
         const end = Date.now() + 15000;
-        while (!(window.__play && window.__play.run)) {
-          if (Date.now() > end) throw new Error("plugin page did not define window.__play");
+        while (!(window.__mediactl && window.__mediactl.run)) {
+          if (Date.now() > end) throw new Error("plugin page did not define window.__mediactl");
           await sleep(50);
         }
-        post({ type: "reply", req, ok: true, result: await window.__play.run(action) });
+        post({ type: "reply", req, ok: true, result: await window.__mediactl.run(action) });
       } catch (e) {
         post({ type: "reply", req, ok: false, error: String((e && e.message) || e) });
       }
@@ -67,6 +67,10 @@ pub enum Command {
     },
     Close {
         id: String,
+    },
+    Screenshot {
+        id: String,
+        path: String,
     },
     List,
     Shutdown,
@@ -308,6 +312,17 @@ impl State {
                 apply_window_opts(player, &opts);
                 self.dispatch(&id, json!({ "action": "status" }), reply);
             }
+            Command::Screenshot { id, path } => {
+                let Some(player) = self.players.get(&id) else {
+                    let _ = reply.send(Err(format!("no player with id {id:?}")));
+                    return;
+                };
+                let window_number = native_window_number(&player.window);
+                // screencapture blocks; keep the event loop responsive.
+                std::thread::spawn(move || {
+                    let _ = reply.send(capture_window(window_number, &id, &path));
+                });
+            }
             Command::Close { id } => {
                 if self.players.contains_key(&id) {
                     self.close_player(&id);
@@ -328,7 +343,7 @@ impl State {
     ) -> Result<()> {
         let (w, h) = opts.size.unwrap_or((960.0, 540.0));
         let window = WindowBuilder::new()
-            .with_title(format!("play [{id}] {}", plugin.name()))
+            .with_title(format!("mediactl [{id}] {}", plugin.name()))
             .with_inner_size(LogicalSize::new(w, h))
             .with_visible(false)
             .build(target)
@@ -407,7 +422,7 @@ impl State {
                 reply,
             },
         );
-        let script = format!("window.__playHost.run({req}, {action})");
+        let script = format!("window.__mediactlHost.run({req}, {action})");
         let player = self.players.get_mut(id).expect("checked by caller");
         if player.page_ready {
             run_script(player, &script);
@@ -533,6 +548,43 @@ fn window_info(player: &Player) -> Value {
         "work_area": work_area(window),
         "scale_factor": window.scale_factor(),
     })
+}
+
+#[cfg(target_os = "macos")]
+fn native_window_number(window: &Window) -> isize {
+    use objc2_app_kit::NSWindow;
+    use tao::platform::macos::WindowExtMacOS;
+
+    // SAFETY: tao returns a valid NSWindow pointer owned by `window`, used on the main thread.
+    let ns_window: &NSWindow = unsafe { &*(window.ns_window() as *const NSWindow) };
+    ns_window.windowNumber()
+}
+
+/// Captures one window (even when covered) with macOS `screencapture`.
+#[cfg(target_os = "macos")]
+fn capture_window(window_number: isize, id: &str, path: &str) -> Result<Value, String> {
+    let out = std::process::Command::new("screencapture")
+        .args(["-x", "-o", &format!("-l{window_number}"), path])
+        .output()
+        .map_err(|e| format!("running screencapture: {e}"))?;
+    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if !out.status.success() || bytes == 0 {
+        return Err(format!(
+            "screencapture failed (grant Screen Recording permission to the terminal): {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(json!({ "id": id, "path": path, "bytes": bytes }))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_window_number(_window: &Window) -> isize {
+    0
+}
+
+#[cfg(not(target_os = "macos"))]
+fn capture_window(_n: isize, _id: &str, _path: &str) -> Result<Value, String> {
+    Err("screenshots of WebView players are only supported on macOS".into())
 }
 
 /// Size of the area showing the video.

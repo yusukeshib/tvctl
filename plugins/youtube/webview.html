@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>play</title>
+<title>mediactl</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
   #player { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; }
@@ -26,7 +26,7 @@
 
   let player = null;
   let lastError = null;
-  // Subtitle track selected through play. The IFrame API's cached
+  // Subtitle track selected through mediactl. The IFrame API's cached
   // getOption("captions", "track") goes stale, so it is not used for status.
   let subs = null;
   // Caption tracks only become available once playback starts; a request made
@@ -196,9 +196,9 @@
   const frameWaiters = new Map();
   window.addEventListener("message", (e) => {
     const d = e.data;
-    if (d && typeof d === "object" && d.__playReply != null && frameWaiters.has(d.__playReply)) {
-      frameWaiters.get(d.__playReply)(d);
-      frameWaiters.delete(d.__playReply);
+    if (d && typeof d === "object" && d.__mediactlReply != null && frameWaiters.has(d.__mediactlReply)) {
+      frameWaiters.get(d.__mediactlReply)(d);
+      frameWaiters.delete(d.__mediactlReply);
     }
   });
   function frameCall(msg) {
@@ -209,8 +209,14 @@
         clearTimeout(timer);
         if (d.error) reject(new Error(d.error)); else resolve(d.result);
       });
-      player.getIframe().contentWindow.postMessage({ __play: true, id, ...msg }, "*");
+      player.getIframe().contentWindow.postMessage({ __mediactl: true, id, ...msg }, "*");
     });
+  }
+
+  // Waits (bounded) for the player to reach `state`, e.g. through buffering.
+  async function settleIn(state) {
+    await waitFor(() => player.getPlayerState() === state, 5000);
+    return status();
   }
 
   async function settle(result) {
@@ -223,11 +229,12 @@
     if (a.action === "status") return status();
     requirePlayer();
     switch (a.action) {
-      case "play": player.playVideo(); return settle();
-      case "pause": player.pauseVideo(); return settle();
+      case "play": player.playVideo(); return settleIn(1);
+      case "pause": player.pauseVideo(); return settleIn(2);
       case "toggle":
-        if (player.getPlayerState() === 1) player.pauseVideo(); else player.playVideo();
-        return settle();
+        if (player.getPlayerState() === 1) { player.pauseVideo(); return settleIn(2); }
+        player.playVideo();
+        return settleIn(1);
       case "seek": {
         let t = a.relative ? player.getCurrentTime() + a.seconds : a.seconds;
         const dur = player.getDuration();
@@ -250,10 +257,14 @@
           throw new Error(`quality "${a.level}" not available (available: ${levels.join(", ")})`);
         }
         await frameCall({ op: "quality", level: a.level });
-        await sleep(1500);
-        const s = status();
-        const now = await frameCall({ op: "info" });
-        return { ...s, quality: now.quality, requested_quality: a.level };
+        // The switch happens asynchronously; wait (bounded) until it is visible.
+        let now = await frameCall({ op: "info" });
+        const end = Date.now() + 8000;
+        while (a.level !== "auto" && now.quality !== a.level && Date.now() < end) {
+          await sleep(250);
+          now = await frameCall({ op: "info" });
+        }
+        return { ...status(), quality: now.quality, requested_quality: a.level };
       }
       default: throw new Error("unknown action: " + a.action);
     }
@@ -279,7 +290,7 @@
     return m ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0) : null;
   }
 
-  window.__play = {
+  window.__mediactl = {
     run: (action) => {
       if (action.action !== "open") return run(action);
       const { id, start } = parseUrl(action.url);

@@ -1,11 +1,11 @@
-# play
+# mediactl
 
-A Rust CLI that lets agents (or people) play YouTube videos in native windows and
-control them from the command line. Every command prints JSON to stdout; errors
-go to stderr with exit code 1.
+A Rust CLI that lets agents (or people) play videos in windows and control them
+from the command line. Every command prints JSON to stdout; errors go to stderr
+with exit code 1.
 
-macOS only for now. Videos play through the YouTube embedded player, so videos
-whose owners disable embedding cannot be played (`open` returns the error).
+Services are plugins (`mediactl plugins` lists them). Currently: YouTube.
+macOS only for now.
 
 ## Install
 
@@ -16,59 +16,98 @@ cargo install --path .
 ## Usage
 
 ```sh
-play server up                       # start the background server
-play open https://youtu.be/jNQXAC9IVRw --layout bottom-right --size 640x360
-# => {"id": "1", "player": {...}, "window": {...}}
+mediactl server up                     # start the background server
+mediactl open https://youtu.be/jNQXAC9IVRw --layout bottom-right --size 640x360
+# => {"id": "1", "service": "youtube", "backend": "webview", "player": {...}, "window": {...}}
 
-play status 1
-play pause 1 / play play 1 / play toggle 1
-play seek 1 1:30        # absolute (90, 1:30, 1m30s)
-play seek 1 -10         # relative (+10, -10)
-play forward 1 30       # default 10 s
-play back 1
-play subtitles 1 ja     # Japanese; auto-translated if no Japanese track
-play subtitles 1 list | on | off
-play quality 1 hd1080   # auto, small, medium, large, hd720, hd1080, ...
-play volume 1 50 / play mute 1 / play unmute 1
-play speed 1 1.5
-play window 1 --layout left          # left/right/top/bottom/top-left/.../center/maximize
-play window 1 --size 1280x720 --position 100,50 --on-top on
-play fullscreen 1                    # toggle (or on/off)
-play list
-play close 1
-play server down
+mediactl status 1
+mediactl play 1 / mediactl pause 1 / mediactl toggle 1
+mediactl seek 1 1:30                   # absolute (90, 1:30, 1m30s)
+mediactl seek 1 -10                    # relative (+10, -10)
+mediactl forward 1 30 / mediactl back 1   # default 10 s
+mediactl subtitles 1 ja                # Japanese; auto-translated if there is no Japanese track
+mediactl subtitles 1 list | on | off
+mediactl audio 1 list | ja             # audio track (e.g. dubbing), where supported
+mediactl quality 1 hd1080              # auto, small, medium, large, hd720, hd1080, ...
+mediactl volume 1 50 / mediactl mute 1 / mediactl unmute 1
+mediactl speed 1 1.5
+mediactl window 1 --layout left        # left/right/top/bottom/top-left/.../center/maximize
+mediactl window 1 --layout bottom-right --size 480x270   # anchored to a corner
+mediactl window 1 --size 1280x720 --position 100,50 --on-top on
+mediactl fullscreen 1                  # toggle (or on/off)
+mediactl screenshot 1 shot.png         # PNG of the player window, even when covered
+mediactl list
+mediactl close 1
+mediactl server down
+
+mediactl auth login youtube            # sign in once in mediactl's Chrome profile
+mediactl auth status
+mediactl plugins
 ```
 
-See `play --help` and `play <command> --help` for details.
+`--size` is the video area; layouts without `--size` fill their screen region.
+See `mediactl --help` and `mediactl <command> --help` for details.
+
+## Backends
+
+- **webview**: a native window with a WebView (tao + wry). No dependencies. Used
+  for services with public embed APIs (YouTube logged out).
+- **chrome**: an app window of Google Chrome, driven through the Chrome DevTools
+  Protocol, using a dedicated profile at
+  `~/Library/Application Support/mediactl/chrome-profile`. Used where a login or
+  DRM is needed. Chrome refuses DevTools control of your everyday profile, so
+  mediactl has its own; sign in to each service once with `mediactl auth login`.
+  Always-on-top is not available in this backend.
+
+A plugin lists its backends in order of preference. If a plugin declares
+`prefer_backend_when_logged_in` and you are logged in, that backend is used
+(YouTube: Chrome, so Premium accounts get no ads). `open --backend` overrides.
+
+`auth login` opens the login page in a plain Chrome (not controlled, because
+Google refuses sign-in in automated browsers) on mediactl's profile. Sign in, then
+quit that Chrome with Cmd+Q; mediactl then checks the login cookies.
 
 ## Plugins
 
-Each service is a plugin directory, `plugins/<name>/`:
+Each service is a directory `plugins/<name>/`:
 
-- `plugin.toml`: `name`, `description`, `domains` (subdomains match too), and
-  `backends` (in order of preference).
-- `webview.html`: the page loaded into the native WebView backend.
+- `plugin.toml`:
+  - `name`, `description`, `domains` (subdomains match too), `backends`
+  - optional `[auth]`: `login_url`, `cookie_url`, `logged_in_cookies`,
+    `prefer_backend_when_logged_in`, `login_mode` (`plain` by default, or `controlled`)
+- `webview.html`: the page for the WebView backend.
 - `frame.js` (optional): injected into that WebView's subframes.
-- `chrome.js`: the adapter for the Chrome backend (planned).
+- `chrome.js`: the adapter for the Chrome backend. It is loaded into every
+  document of the player window, so it can restore its page state after reloads.
 
-Adapters define `window.__play.run(action)`, which returns a status object.
+Adapters define `window.__mediactl.run(action)`, which returns a status object.
 Actions: `open {url, start, paused, subtitles}`, `status`, `play`, `pause`,
-`toggle`, `seek {seconds, relative}`, `subtitles {lang}`, `volume {level, muted}`,
-`speed {rate}`, `quality {level}`. Unsupported actions throw.
+`toggle`, `seek {seconds, relative}`, `subtitles {lang}`, `audio {lang}`,
+`volume {level, muted}`, `speed {rate}`, `quality {level}`. Unsupported actions
+throw. In the Chrome backend, `open` may return `{"navigate": url}` to be loaded
+at another URL first.
 
-Built-in plugins are compiled into the binary. Plugins in `$PLAY_PLUGIN_DIR` or
-`~/.config/play/plugins/<name>/` are loaded when the server starts and override
-built-ins with the same name. `play plugins` lists them.
+Built-in plugins are compiled into the binary. Plugins in `$MEDIACTL_PLUGIN_DIR`
+or `~/.config/mediactl/plugins/<name>/` are loaded when the server starts and
+override built-ins with the same name.
 
-## Design
+## Environment
 
-- `play server up` spawns `play __serve` in the background. The server runs the
-  GUI event loop (tao + wry). It listens on a Unix socket (`$TMPDIR/play.sock`,
-  or `PLAY_SOCKET` if set) and writes logs to `play.log` next to the socket.
-- Each WebView player is a window whose WebView loads the plugin's `webview.html`
-  from a loopback HTTP server, so embeds get a real origin. A host bridge passes
-  actions to `window.__play.run` and returns results through IPC.
-- YouTube: `webview.html` uses the IFrame API. `frame.js` reaches internal player
-  functions that the IFrame API no longer exposes, such as quality selection.
-  Caption tracks only become available once playback starts. A subtitle request
-  made before that is applied when playback begins (status shows `pending`).
+- `MEDIACTL_SOCKET`: server socket (default `$TMPDIR/mediactl.sock`; the log is
+  next to it as `mediactl.log`)
+- `MEDIACTL_DATA_DIR`: data directory (Chrome profile, login state)
+- `MEDIACTL_PLUGIN_DIR`: external plugin directory
+- `MEDIACTL_CHROME`: Chrome executable
+
+## Tests
+
+```sh
+cargo test                                                   # unit tests
+cargo test --test e2e_fake -- --ignored --test-threads=1     # all commands, both backends, offline
+cargo test --test e2e_youtube -- --ignored --test-threads=1  # real YouTube (network)
+```
+
+The end-to-end tests open windows. `e2e_fake` uses a fake plugin and a local site.
+`e2e_youtube` uses a fresh logged-out profile, so ads may play and the tests
+wait for them. To use your logged-in profile instead, set
+`MEDIACTL_E2E_PROFILE="$HOME/Library/Application Support/mediactl"`.

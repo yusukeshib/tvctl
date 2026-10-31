@@ -3,7 +3,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -12,11 +12,11 @@ use serde_json::{Value, json};
 
 use crate::protocol::{Request, Response};
 
-/// Socket path; override with `PLAY_SOCKET`.
+/// Socket path; override with `MEDIACTL_SOCKET`.
 pub fn socket_path() -> PathBuf {
-    std::env::var_os("PLAY_SOCKET")
+    std::env::var_os("MEDIACTL_SOCKET")
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("play.sock"))
+        .unwrap_or_else(|| std::env::temp_dir().join("mediactl.sock"))
 }
 
 /// Server log path (next to the socket).
@@ -34,8 +34,13 @@ pub fn is_running() -> bool {
 
 /// Sends a request and returns the result value, turning server errors into `Err`.
 pub fn send(req: &Request) -> Result<Value> {
-    let stream = connect()
-        .map_err(|_| anyhow!("play server is not running (start it with `play server up`)"))?;
+    send_to(&socket_path(), req)
+}
+
+fn send_to(socket: &Path, req: &Request) -> Result<Value> {
+    let stream = UnixStream::connect(socket).map_err(|_| {
+        anyhow!("mediactl server is not running (start it with `mediactl server up`)")
+    })?;
     let mut writer = stream.try_clone()?;
     serde_json::to_writer(&mut writer, req)?;
     writer.write_all(b"\n")?;
@@ -108,5 +113,72 @@ pub fn server_status() -> Result<Value> {
         Ok(info)
     } else {
         Ok(json!({ "running": false, "socket": socket_path() }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::net::UnixListener;
+
+    /// One-shot fake server: checks the request line and answers with `reply`.
+    fn serve_once(
+        reply: &'static str,
+    ) -> (tempfile::TempDir, PathBuf, std::thread::JoinHandle<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let mut stream = stream;
+            stream.write_all(reply.as_bytes()).unwrap();
+            line
+        });
+        (dir, path, handle)
+    }
+
+    #[test]
+    fn ok_response() {
+        let (_d, path, h) = serve_once("{\"ok\":true,\"result\":{\"x\":1}}\n");
+        let v = send_to(&path, &Request::List).unwrap();
+        assert_eq!(v["x"], 1);
+        assert_eq!(h.join().unwrap().trim(), "{\"cmd\":\"list\"}");
+    }
+
+    #[test]
+    fn error_response() {
+        let (_d, path, _h) = serve_once("{\"ok\":false,\"error\":\"nope\"}\n");
+        assert_eq!(
+            send_to(&path, &Request::Ping).unwrap_err().to_string(),
+            "nope"
+        );
+    }
+
+    #[test]
+    fn empty_and_garbage_responses() {
+        let (_d, path, _h) = serve_once("");
+        assert!(
+            send_to(&path, &Request::Ping)
+                .unwrap_err()
+                .to_string()
+                .contains("without a response")
+        );
+        let (_d, path, _h) = serve_once("garbage\n");
+        assert!(
+            send_to(&path, &Request::Ping)
+                .unwrap_err()
+                .to_string()
+                .contains("parsing")
+        );
+    }
+
+    #[test]
+    fn no_server() {
+        let e = send_to(Path::new("/nonexistent/mediactl.sock"), &Request::Ping).unwrap_err();
+        assert!(e.to_string().contains("server up"), "{e}");
     }
 }

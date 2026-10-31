@@ -1,5 +1,12 @@
 name = "youtube"
 description = "YouTube videos (watch, youtu.be, shorts, embed, live URLs)"
 domains = ["youtube.com", "youtu.be", "youtube-nocookie.com"]
-# Preference order when not logged in.
-backends = ["webview"]
+# Preference order when not logged in. Logged out, the embedded player in the
+# native WebView is enough; logged in, Chrome plays as the user (Premium: no ads).
+backends = ["webview", "chrome"]
+
+[auth]
+login_url = "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26next%3Dhttps%253A%252F%252Fwww.youtube.com%252F"
+cookie_url = "https://www.youtube.com"
+logged_in_cookies = ["LOGIN_INFO"]
+prefer_backend_when_logged_in = "chrome"
