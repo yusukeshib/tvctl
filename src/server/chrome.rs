@@ -341,6 +341,12 @@ impl Backend {
         Ok(json!({ "id": id, "closed": true }))
     }
 
+    /// Evaluates a script in the player page and returns its (awaited) value.
+    pub fn eval(&self, id: &str, script: &str) -> Result<Value> {
+        let (inst, player) = self.player(id)?;
+        evaluate(&inst, &player, script, Duration::from_secs(30))
+    }
+
     /// Captures the page (works even when the window is covered).
     pub fn screenshot(&self, id: &str, path: &str) -> Result<Value> {
         use base64::Engine;

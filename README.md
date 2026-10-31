@@ -4,7 +4,8 @@ A Rust CLI that lets agents (or people) play videos in windows and control them
 from the command line. Every command prints JSON to stdout; errors go to stderr
 with exit code 1.
 
-Services are plugins (`mediactl plugins` lists them). Currently: YouTube.
+Services are plugins (`mediactl plugins` lists them). Currently: YouTube and
+Spotify (web player).
 macOS only for now.
 
 ## Install
@@ -22,6 +23,7 @@ mediactl open https://youtu.be/jNQXAC9IVRw --layout bottom-right --size 640x360
 
 mediactl status 1
 mediactl play 1 / mediactl pause 1 / mediactl toggle 1
+mediactl next 1 / mediactl prev 1        # next/previous track or playlist entry
 mediactl seek 1 1:30                   # absolute (90, 1:30, 1m30s)
 mediactl seek 1 -10                    # relative (+10, -10)
 mediactl forward 1 30 / mediactl back 1   # default 10 s
@@ -41,6 +43,7 @@ mediactl close 1
 mediactl server down
 
 mediactl auth login youtube            # sign in once in mediactl's Chrome profile
+mediactl auth login spotify
 mediactl auth status
 mediactl plugins
 ```
@@ -67,6 +70,18 @@ A plugin lists its backends in order of preference. If a plugin declares
 Google refuses sign-in in automated browsers) on mediactl's profile. Sign in, then
 quit that Chrome with Cmd+Q; mediactl then checks the login cookies.
 
+## Services
+
+| Plugin | Backends | Login | Supported actions |
+|---|---|---|---|
+| `youtube` | webview (logged out), chrome (logged in) | optional (Premium: no ads) | all; `audio` only in chrome |
+| `spotify` | chrome | required | play, pause, toggle, next, previous, seek, volume, mute |
+
+Spotify links: tracks, albums, playlists, artists and episodes on
+`open.spotify.com`. A track link plays that track; other pages start from the top.
+The Spotify plugin drives the web player's UI (no public API), so Spotify UI
+changes can break it; the E2E tests detect that.
+
 ## Plugins
 
 Each service is a directory `plugins/<name>/`:
@@ -82,7 +97,7 @@ Each service is a directory `plugins/<name>/`:
 
 Adapters define `window.__mediactl.run(action)`, which returns a status object.
 Actions: `open {url, start, paused, subtitles}`, `status`, `play`, `pause`,
-`toggle`, `seek {seconds, relative}`, `subtitles {lang}`, `audio {lang}`,
+`toggle`, `next`, `previous`, `seek {seconds, relative}`, `subtitles {lang}`, `audio {lang}`,
 `volume {level, muted}`, `speed {rate}`, `quality {level}`. Unsupported actions
 throw. In the Chrome backend, `open` may return `{"navigate": url}` to be loaded
 at another URL first.
@@ -99,12 +114,17 @@ override built-ins with the same name.
 - `MEDIACTL_PLUGIN_DIR`: external plugin directory
 - `MEDIACTL_CHROME`: Chrome executable
 
+For plugin development, the hidden command `mediactl __eval <ID> <JS>` evaluates
+JavaScript in a Chrome-backend player page and prints the (awaited) result.
+
 ## Tests
 
 ```sh
 cargo test                                                   # unit tests
 cargo test --test e2e_fake -- --ignored --test-threads=1     # all commands, both backends, offline
 cargo test --test e2e_youtube -- --ignored --test-threads=1  # real YouTube (network)
+MEDIACTL_E2E_PROFILE="$HOME/Library/Application Support/mediactl" \
+  cargo test --test e2e_spotify -- --ignored --test-threads=1  # real Spotify (needs login)
 ```
 
 The end-to-end tests open windows. `e2e_fake` uses a fake plugin and a local site.

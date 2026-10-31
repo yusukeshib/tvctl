@@ -19,6 +19,7 @@ if (!window.__mediactl) window.__mediactl = (() => {
     quality: "hd720",
     subtitles: null,
     audio: "en",
+    item: 0,
   };
 
   function status() {
@@ -37,6 +38,7 @@ if (!window.__mediactl) window.__mediactl = (() => {
       available_qualities: QUALITIES,
       subtitles: s.subtitles,
       audio: s.audio,
+      item: s.item,
     };
   }
 
@@ -68,6 +70,8 @@ if (!window.__mediactl) window.__mediactl = (() => {
       case "play": s.state = "playing"; break;
       case "pause": s.state = "paused"; break;
       case "toggle": s.state = s.state === "playing" ? "paused" : "playing"; break;
+      case "next": s.item += 1; s.current_time = 0; break;
+      case "previous": s.item = Math.max(0, s.item - 1); s.current_time = 0; break;
       case "seek": {
         const t = a.relative ? s.current_time + a.seconds : a.seconds;
         s.current_time = Math.min(DURATION, Math.max(0, t));

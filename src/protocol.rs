@@ -31,6 +31,11 @@ pub enum Request {
     Close {
         id: String,
     },
+    /// Evaluate JavaScript in a Chrome-backend player page (plugin development).
+    Eval {
+        id: String,
+        script: String,
+    },
     /// Save a PNG of the player window's content to `path` (absolute).
     Screenshot {
         id: String,
@@ -54,6 +59,10 @@ pub enum PlayerAction {
     Play,
     Pause,
     Toggle,
+    /// Next item (track, playlist entry).
+    Next,
+    /// Previous item.
+    Previous,
     Seek {
         seconds: f64,
         relative: bool,
@@ -153,6 +162,8 @@ mod tests {
             (PlayerAction::Play, json!({ "action": "play" })),
             (PlayerAction::Pause, json!({ "action": "pause" })),
             (PlayerAction::Toggle, json!({ "action": "toggle" })),
+            (PlayerAction::Next, json!({ "action": "next" })),
+            (PlayerAction::Previous, json!({ "action": "previous" })),
             (
                 PlayerAction::Seek {
                     seconds: -5.0,

@@ -152,6 +152,10 @@ impl Router {
                 ),
                 BackendKind::Chrome => self.chrome.screenshot(&id, &path).map_err(err),
             },
+            Request::Eval { id, script } => match self.players.owner(&id)? {
+                BackendKind::Webview => Err("__eval is only available for chrome players".into()),
+                BackendKind::Chrome => self.chrome.eval(&id, &script).map_err(err),
+            },
             Request::AuthLogin { service } => {
                 self.chrome.login(self.auth_plugin(&service)?).map_err(err)
             }

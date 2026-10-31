@@ -166,6 +166,12 @@ fn playback_suite(backend: &str) {
     assert_eq!(player(&env.ok(&["toggle", id]), "state"), "playing");
     assert_eq!(player(&env.ok(&["toggle", id]), "state"), "paused");
 
+    // next / previous
+    assert_eq!(player(&env.ok(&["next", id]), "item"), 1);
+    assert_eq!(player(&env.ok(&["next", id]), "item"), 2);
+    assert_eq!(player(&env.ok(&["prev", id]), "item"), 1);
+    env.ok(&["seek", id, "90"]);
+
     // seeking: absolute, relative, clamped, forward/back defaults
     let t = |args: &[&str]| f(&player(&env.ok(args), "current_time"));
     assert_eq!(t(&["seek", id, "1:00"]), 60.0);
@@ -413,6 +419,29 @@ fn multiple_players_across_backends() {
     env.ok(&["server", "down"]);
     env.up();
     assert_eq!(env.ok(&["list"]), json!({ "players": [] }));
+}
+
+#[test]
+#[ignore = "opens windows; run with --ignored"]
+fn eval_is_chrome_only() {
+    let env = Env::new();
+    env.up();
+    let c = open(&env, "chrome", &[]);
+    let w = open(&env, "webview", &[]);
+    let cid = c["id"].as_str().unwrap();
+    assert_eq!(
+        env.ok(&["__eval", cid, "Promise.resolve(6 * 7)"]),
+        json!(42)
+    );
+    assert_eq!(env.ok(&["__eval", cid, "document.title"]), json!(""));
+    assert!(
+        env.err(&["__eval", cid, "throw new Error('nope')"])
+            .contains("nope")
+    );
+    assert!(
+        env.err(&["__eval", w["id"].as_str().unwrap(), "1"])
+            .contains("only available for chrome")
+    );
 }
 
 #[test]

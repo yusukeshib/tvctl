@@ -235,6 +235,8 @@
         if (player.getPlayerState() === 1) { player.pauseVideo(); return settleIn(2); }
         player.playVideo();
         return settleIn(1);
+      case "next": player.nextVideo(); return settle();
+      case "previous": player.previousVideo(); return settle();
       case "seek": {
         let t = a.relative ? player.getCurrentTime() + a.seconds : a.seconds;
         const dur = player.getDuration();

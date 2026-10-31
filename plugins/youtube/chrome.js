@@ -275,6 +275,8 @@ window.__mediactl = (() => {
         if (p.getPlayerState() === 1) { p.pauseVideo(); return settleIn(p, 2); }
         p.playVideo();
         return settleIn(p, 1);
+      case "next": p.nextVideo(); return settle();
+      case "previous": p.previousVideo(); return settle();
       case "seek": {
         let t = a.relative ? p.getCurrentTime() + a.seconds : a.seconds;
         const dur = p.getDuration();

@@ -78,6 +78,10 @@ enum Cmd {
     Pause { id: String },
     /// Toggle between playing and paused.
     Toggle { id: String },
+    /// Next item (track or playlist entry).
+    Next { id: String },
+    /// Previous item.
+    Prev { id: String },
     /// Seek to a position: absolute (90, 1:30, 1m30s) or relative (+10, -30).
     Seek {
         id: String,
@@ -146,6 +150,9 @@ enum Cmd {
     },
     #[command(name = "__serve", hide = true)]
     Serve,
+    /// Evaluate JavaScript in a Chrome-backend player page (plugin development).
+    #[command(name = "__eval", hide = true)]
+    Eval { id: String, script: String },
 }
 
 #[derive(Subcommand)]
@@ -258,6 +265,9 @@ fn plan(cmd: Cmd) -> Result<Plan> {
         Cmd::Play { id } => player(id, PlayerAction::Play),
         Cmd::Pause { id } => player(id, PlayerAction::Pause),
         Cmd::Toggle { id } => player(id, PlayerAction::Toggle),
+        Cmd::Next { id } => player(id, PlayerAction::Next),
+        Cmd::Prev { id } => player(id, PlayerAction::Previous),
+        Cmd::Eval { id, script } => Request::Eval { id, script },
         Cmd::Seek { id, position } => seek_request(id, timeparse::parse_seek(&position)?),
         Cmd::Forward { id, duration } => {
             seek_request(id, Seek::Relative(timeparse::parse_duration(&duration)?))
@@ -480,6 +490,18 @@ mod tests {
         assert_eq!(
             req(&["toggle", "3"]),
             action("3", json!({ "action": "toggle" }))
+        );
+        assert_eq!(
+            req(&["next", "1"]),
+            action("1", json!({ "action": "next" }))
+        );
+        assert_eq!(
+            req(&["prev", "1"]),
+            action("1", json!({ "action": "previous" }))
+        );
+        assert_eq!(
+            req(&["__eval", "1", "1+1"]),
+            json!({ "cmd": "eval", "id": "1", "script": "1+1" })
         );
         rejects(&["play"]);
     }
