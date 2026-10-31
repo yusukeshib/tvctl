@@ -17,7 +17,6 @@ cargo install --path .
 ## Usage
 
 ```sh
-mediactl server up                     # start the background server
 mediactl open https://youtu.be/jNQXAC9IVRw --layout bottom-right --size 640x360
 # => {"id": "1", "service": "youtube", "backend": "webview", "player": {...}, "window": {...}}
 
@@ -40,13 +39,18 @@ mediactl fullscreen 1                  # toggle (or on/off)
 mediactl screenshot 1 shot.png         # PNG of the player window, even when covered
 mediactl list
 mediactl close 1
-mediactl server down
 
 mediactl auth login youtube            # sign in once in mediactl's Chrome profile
 mediactl auth login spotify
 mediactl auth status
 mediactl plugins
 ```
+
+The background server starts on demand (`open`, `auth`) and stops a few seconds
+after the last player closes (`MEDIACTL_IDLE_SECS`, default 5), quitting
+mediactl's Chrome too. `mediactl server up` keeps it running without players
+(avoids restarting Chrome between uses); `mediactl server down` stops it and
+closes all players; `mediactl server status` shows its state.
 
 `--size` is the video area; layouts without `--size` fill their screen region.
 See `mediactl --help` and `mediactl <command> --help` for details.
@@ -114,6 +118,7 @@ override built-ins with the same name.
 - `MEDIACTL_DATA_DIR`: data directory (Chrome profile, login state)
 - `MEDIACTL_PLUGIN_DIR`: external plugin directory
 - `MEDIACTL_CHROME`: Chrome executable
+- `MEDIACTL_IDLE_SECS`: idle time before an on-demand server stops (default 5)
 
 For plugin development, the hidden command `mediactl __eval <ID> <JS>` evaluates
 JavaScript in a Chrome-backend player page and prints the (awaited) result.

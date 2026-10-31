@@ -10,6 +10,10 @@ use crate::plugin::BackendKind;
 pub enum Request {
     Ping,
     Shutdown,
+    /// Turn the idle shutdown off (`true`, as with `server up`) or on.
+    SetPersistent {
+        persistent: bool,
+    },
     List,
     Open {
         url: String,

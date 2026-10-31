@@ -75,6 +75,8 @@ login_mode = "controlled"
             .env("MEDIACTL_SOCKET", self.path("s.sock"))
             .env("MEDIACTL_DATA_DIR", &self.data)
             .env("MEDIACTL_PLUGIN_DIR", self.path("plugins"))
+            // Short idle shutdown so the auto-stop tests are fast.
+            .env("MEDIACTL_IDLE_SECS", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()

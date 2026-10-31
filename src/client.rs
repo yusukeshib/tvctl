@@ -62,21 +62,34 @@ fn send_to(socket: &Path, req: &Request) -> Result<Value> {
     }
 }
 
+/// `server up`: starts a persistent server (no idle shutdown), or makes the
+/// running one persistent.
 pub fn server_up() -> Result<Value> {
     if is_running() {
-        let mut info = send(&Request::Ping)?;
+        let mut info = send(&Request::SetPersistent { persistent: true })?;
         info["already_running"] = json!(true);
         return Ok(info);
     }
+    start(true)?;
+    let mut info = send(&Request::Ping)?;
+    info["already_running"] = json!(false);
+    Ok(info)
+}
+
+/// Starts the server in the background and waits until it accepts connections.
+fn start(persistent: bool) -> Result<()> {
     let _ = std::fs::remove_file(socket_path());
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(log_path())
         .context("opening server log")?;
-    Command::new(std::env::current_exe()?)
-        .arg("__serve")
-        .stdin(Stdio::null())
+    let mut cmd = Command::new(std::env::current_exe()?);
+    cmd.arg("__serve");
+    if persistent {
+        cmd.arg("--persistent");
+    }
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log)
         .process_group(0)
@@ -85,13 +98,48 @@ pub fn server_up() -> Result<Value> {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if is_running() {
-            let mut info = send(&Request::Ping)?;
-            info["already_running"] = json!(false);
-            return Ok(info);
+            return Ok(());
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     bail!("server did not start; see {}", log_path().display())
+}
+
+/// Sends a request, starting a (non-persistent) server first if none is running.
+/// A request that reaches a server in the middle of its idle shutdown is retried
+/// once on a fresh server.
+pub fn send_autostart(req: &Request) -> Result<Value> {
+    for attempt in 0..2 {
+        if !is_running() {
+            start(false)?;
+        }
+        match send(req) {
+            Err(e) if attempt == 0 && is_shutdown_race(&e) => {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while is_running() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+            other => return other,
+        }
+    }
+    unreachable!("the second attempt always returns")
+}
+
+fn is_shutdown_race(e: &anyhow::Error) -> bool {
+    let msg = format!("{e:#}");
+    msg.contains("shutting down")
+        || msg.contains("without a response")
+        || msg.contains("is not running")
+}
+
+/// `list` without a server: there are no players.
+pub fn list() -> Result<Value> {
+    if is_running() {
+        send(&Request::List)
+    } else {
+        Ok(json!({ "players": [] }))
+    }
 }
 
 pub fn server_down() -> Result<Value> {

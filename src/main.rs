@@ -149,7 +149,11 @@ enum Cmd {
         path: std::path::PathBuf,
     },
     #[command(name = "__serve", hide = true)]
-    Serve,
+    Serve {
+        /// Do not stop when idle (started by `server up`).
+        #[arg(long)]
+        persistent: bool,
+    },
     /// Evaluate JavaScript in a Chrome-backend player page (plugin development).
     #[command(name = "__eval", hide = true)]
     Eval { id: String, script: String },
@@ -157,7 +161,9 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum ServerCmd {
-    /// Start the server in the background (no-op if already running).
+    /// Start the server and keep it running when no players are open. Without
+    /// this, `open` and `auth` start it on demand and it stops a few seconds after
+    /// the last player closes.
     Up,
     /// Stop the server and close all players.
     Down,
@@ -210,7 +216,7 @@ fn seek_request(id: String, seek: Seek) -> Request {
 /// What a command does: something local, or one request to the server.
 #[derive(Debug)]
 enum Plan {
-    Serve,
+    Serve(bool),
     ServerUp,
     ServerDown,
     ServerStatus,
@@ -220,7 +226,7 @@ enum Plan {
 
 fn plan(cmd: Cmd) -> Result<Plan> {
     let req = match cmd {
-        Cmd::Serve => return Ok(Plan::Serve),
+        Cmd::Serve { persistent } => return Ok(Plan::Serve(persistent)),
         Cmd::Server { action } => {
             return Ok(match action {
                 ServerCmd::Up => Plan::ServerUp,
@@ -341,8 +347,8 @@ fn plan(cmd: Cmd) -> Result<Plan> {
 
 fn run(cmd: Cmd) -> Result<Value> {
     match plan(cmd)? {
-        Plan::Serve => {
-            server::run()?;
+        Plan::Serve(persistent) => {
+            server::run(persistent)?;
             Ok(Value::Null)
         }
         Plan::ServerUp => client::server_up(),
@@ -362,14 +368,20 @@ fn run(cmd: Cmd) -> Result<Value> {
                      (for some services, closing the login window is enough)."
                 );
             }
-            client::send(&req)
+            match req {
+                Request::Open { .. } | Request::AuthLogin { .. } | Request::AuthStatus { .. } => {
+                    client::send_autostart(&req)
+                }
+                Request::List => client::list(),
+                _ => client::send(&req),
+            }
         }
     }
 }
 
 fn main() {
     let cli = Cli::parse();
-    let is_serve = matches!(cli.command, Cmd::Serve);
+    let is_serve = matches!(cli.command, Cmd::Serve { .. });
     match run(cli.command) {
         Ok(v) if !is_serve => {
             println!(
@@ -420,7 +432,8 @@ mod tests {
             (vec!["server", "down"], "ServerDown"),
             (vec!["server", "status"], "ServerStatus"),
             (vec!["plugins"], "Plugins"),
-            (vec!["__serve"], "Serve"),
+            (vec!["__serve"], "Serve(false)"),
+            (vec!["__serve", "--persistent"], "Serve(true)"),
         ] {
             let mut argv = vec!["mediactl"];
             argv.extend(args.iter());
