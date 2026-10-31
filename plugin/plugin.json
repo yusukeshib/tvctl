@@ -1,0 +1,34 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "tvctl",
+  "version": "0.1.0",
+  "description": "Play YouTube videos and Spotify music in windows on your Mac and control them (playback, seek, subtitles, volume, quality, window layout, screenshots) with the tvctl CLI. Installs and updates tvctl with cargo.",
+  "author": {
+    "name": "Yusuke Shibata",
+    "email": "yusukeshib@gmail.com",
+    "url": "https://github.com/yusukeshib"
+  },
+  "homepage": "https://github.com/yusukeshib/tvctl",
+  "repository": "https://github.com/yusukeshib/tvctl",
+  "license": "MIT",
+  "keywords": ["youtube", "spotify", "video", "music", "player", "macos", "cli"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "tvctl",
+        "shortDescription": "Play and control videos and music on your Mac",
+        "longDescription": "tvctl opens YouTube videos and Spotify music in windows on your Mac and lets the assistant control them: play, pause, seek, skip, Japanese subtitles, audio tracks, volume, speed, quality, window size and layout, fullscreen, and screenshots. The skill installs or updates the tvctl command with cargo before use. Requires a Mac where the assistant can run local commands.",
+        "developerName": "Yusuke Shibata",
+        "category": "Productivity",
+        "capabilities": ["Play videos and music", "Control playback", "Subtitles", "Window layout", "Screenshots"],
+        "websiteURL": "https://github.com/yusukeshib/tvctl",
+        "defaultPrompt": [
+          "Play this YouTube video in the center of my screen at 720p.",
+          "Turn on Japanese subtitles and skip ahead 5 minutes.",
+          "Put the player in a small window in the bottom-right corner."
+        ],
+        "brandColor": "#1F6FEB"
+      }
+    }
+  }
+}

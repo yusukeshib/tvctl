@@ -9,7 +9,7 @@ repository = "https://github.com/yusukeshib/tvctl"
 readme = "README.md"
 keywords = ["youtube", "spotify", "player", "cli", "agent"]
 categories = ["command-line-utilities", "multimedia"]
-exclude = ["tests/", "skills/", "scripts/", ".plan.md"]
+exclude = ["tests/", "skills/", "scripts/", "plugin/", ".plan.md"]
 
 [dependencies]
 anyhow = "1.0.104"

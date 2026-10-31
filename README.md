@@ -15,15 +15,26 @@ macOS only for now.
 cargo install tvctl        # or, from a checkout: cargo install --path .
 ```
 
-## Agent skill
+## ChatGPT / Codex plugin and agent skill
 
-`skills/tvctl/SKILL.md` is an [Agent Skills](https://agentskills.io) skill that
-teaches coding agents (Codex CLI, Claude Code, pi, ...) to install/update and use
-tvctl. Copy the `skills/tvctl` folder into your agent's skills directory, or build
-a zip with `scripts/package-skill.sh` (`dist/tvctl-skill.zip`). The skill tells
-the agent to run `cargo install tvctl` at the start of each session so tvctl stays
-up to date. Agents must run locally on the Mac; cloud sandboxes cannot open
-windows on your screen.
+`skills/tvctl/SKILL.md` teaches an agent to install or update tvctl
+(`cargo install tvctl` at the start of every session) and to use it.
+`scripts/package-skill.sh` builds:
+
+- `dist/tvctl-plugin.zip`: an [Agent Plugins 1.0](https://agent-plugins.org)
+  package (`plugin.json` at the root, `skills/tvctl/SKILL.md`) for ChatGPT and
+  Codex. Upload it on the Plugins page of the OpenAI Platform dashboard to publish
+  it, or install it locally: unzip it to `~/.codex/plugins/tvctl` and list it in
+  your personal marketplace `~/.agents/plugins/marketplace.json` (source
+  `{"source": "local", "path": "./.codex/plugins/tvctl"}`), then install it from
+  the Plugins directory of the ChatGPT desktop app or with
+  `codex plugin add tvctl@<marketplace name>`.
+- `dist/tvctl-skill.zip`: the bare skill, for "Upload a skill" in ChatGPT or
+  Claude, or copy `skills/tvctl` into any agent's skills directory.
+
+tvctl opens windows on your Mac, so the agent must be able to run commands on
+that Mac (for example the ChatGPT desktop app, Codex CLI, Claude Code, pi);
+cloud sandboxes cannot show anything on your screen.
 
 ## Usage
 
