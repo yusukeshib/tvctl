@@ -2,7 +2,14 @@
 name = "tvctl"
 version = "0.1.0"
 edition = "2024"
-description = "Agent-friendly CLI that plays YouTube videos in controllable native windows"
+description = "Play YouTube, Spotify and more in windows on your screen and control them from the command line (built for AI agents)"
+license = "MIT"
+authors = ["Yusuke Shibata <yusukeshib@gmail.com>"]
+repository = "https://github.com/yusukeshib/tvctl"
+readme = "README.md"
+keywords = ["youtube", "spotify", "player", "cli", "agent"]
+categories = ["command-line-utilities", "multimedia"]
+exclude = ["tests/", ".plan.md"]
 
 [dependencies]
 anyhow = "1.0.104"

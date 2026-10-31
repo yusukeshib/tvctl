@@ -12,7 +12,7 @@ macOS only for now.
 ## Install
 
 ```sh
-cargo install --path .
+cargo install tvctl        # or, from a checkout: cargo install --path .
 ```
 
 ## Usage
