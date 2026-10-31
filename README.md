@@ -15,6 +15,16 @@ macOS only for now.
 cargo install tvctl        # or, from a checkout: cargo install --path .
 ```
 
+## Agent skill
+
+`skills/tvctl/SKILL.md` is an [Agent Skills](https://agentskills.io) skill that
+teaches coding agents (Codex CLI, Claude Code, pi, ...) to install/update and use
+tvctl. Copy the `skills/tvctl` folder into your agent's skills directory, or build
+a zip with `scripts/package-skill.sh` (`dist/tvctl-skill.zip`). The skill tells
+the agent to run `cargo install tvctl` at the start of each session so tvctl stays
+up to date. Agents must run locally on the Mac; cloud sandboxes cannot open
+windows on your screen.
+
 ## Usage
 
 ```sh
