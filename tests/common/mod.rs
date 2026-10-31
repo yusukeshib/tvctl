@@ -38,6 +38,7 @@ impl Env {
 description = "Fake service for tests"
 domains = ["127.0.0.1"]
 backends = ["webview", "chrome"]
+actions = ["play", "pause", "toggle", "next", "previous", "seek", "subtitles", "audio", "volume", "speed", "quality"]
 
 [auth]
 login_url = "{site}/login"
@@ -51,6 +52,18 @@ login_mode = "controlled"
         )
         .unwrap();
         let data = dir.path().join("data");
+        // A second plugin that supports only some actions (on the same site via
+        // `localhost`), to check that undeclared actions are refused.
+        let limited = dir.path().join("plugins/limited");
+        std::fs::create_dir_all(&limited).unwrap();
+        std::fs::write(limited.join("chrome.js"), FAKE_JS).unwrap();
+        std::fs::write(limited.join("webview.html"), FAKE_HTML).unwrap();
+        std::fs::write(
+            limited.join("plugin.toml"),
+            "name = \"limited\"\ndomains = [\"localhost\"]\nbackends = [\"webview\", \"chrome\"]\n\
+             actions = [\"play\", \"pause\"]\n[unsupported_actions]\nchrome = [\"pause\"]\n",
+        )
+        .unwrap();
         Env { dir, site, data }
     }
 

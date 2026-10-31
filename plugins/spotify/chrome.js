@@ -147,7 +147,14 @@ window.__mediactl = (() => {
     } else if (!a.paused) {
       click(pagePlayButton(), "play");
     }
-    if (!a.paused || autoplays) await waitFor(() => isPlaying() && nowPlaying().title, 10000);
+    if (!a.paused || autoplays) {
+      // The button flips to "Pause" before audio actually starts; commands sent in
+      // between (e.g. an immediate pause) get overridden when it does. Wait until
+      // the position moves.
+      await waitFor(() => isPlaying() && nowPlaying().title, 10000);
+      const t0 = status().current_time ?? 0;
+      await waitFor(() => (status().current_time ?? 0) > t0, 10000);
+    }
     if (a.start) await seekTo(a.start);
     // Best effort: the button is disabled when playback is on another device.
     if (a.paused && isPlaying() && !playPause().disabled) {

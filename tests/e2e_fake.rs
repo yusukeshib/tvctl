@@ -492,6 +492,55 @@ fn multiple_players_across_backends() {
 
 #[test]
 #[ignore = "opens windows; run with --ignored"]
+fn undeclared_actions_are_refused() {
+    let env = Env::new();
+    env.up();
+    let url = env.url("/v").replace("127.0.0.1", "localhost");
+    let w = env.ok(&["open", &url, "--backend", "webview"]);
+    let c = env.ok(&["open", &url, "--backend", "chrome"]);
+    assert_eq!(
+        (w["service"].as_str(), c["service"].as_str()),
+        (Some("limited"), Some("limited"))
+    );
+    let (w, c) = (w["id"].as_str().unwrap(), c["id"].as_str().unwrap());
+    // Declared actions work; `status` is always available.
+    env.ok(&["play", w]);
+    env.ok(&["pause", w]);
+    env.ok(&["status", c]);
+    env.ok(&["play", c]);
+    // Undeclared ones are refused by the server with the supported list.
+    let e = env.err(&["seek", w, "10"]);
+    assert!(
+        e.contains(
+            "seek is not supported by limited (Webview backend); supported: status, play, pause"
+        ),
+        "{e}"
+    );
+    let e = env.err(&["prev", w]);
+    assert!(e.contains("previous is not supported"), "{e}");
+    // Backend-specific gaps from [unsupported_actions].
+    let e = env.err(&["pause", c]);
+    assert!(
+        e.contains("pause is not supported by limited (Chrome backend); supported: status, play"),
+        "{e}"
+    );
+    // `plugins` exposes the declarations.
+    let plugins = env.ok(&["plugins"]);
+    let limited = plugins["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "limited")
+        .unwrap();
+    assert_eq!(limited["actions"], json!(["play", "pause"]));
+    assert_eq!(
+        limited["unsupported_actions"],
+        json!({ "chrome": ["pause"] })
+    );
+}
+
+#[test]
+#[ignore = "opens windows; run with --ignored"]
 fn eval_is_chrome_only() {
     let env = Env::new();
     env.up();

@@ -53,7 +53,8 @@ mediactl's Chrome too. `mediactl server up` keeps it running without players
 closes all players; `mediactl server status` shows its state.
 
 `--size` is the video area; layouts without `--size` fill their screen region.
-See `mediactl --help` and `mediactl <command> --help` for details.
+`mediactl --help` describes the workflow, the JSON output and error format, and
+examples; `mediactl <command> --help` describes each argument.
 
 ## Backends
 
@@ -93,6 +94,10 @@ Each service is a directory `plugins/<name>/`:
 
 - `plugin.toml`:
   - `name`, `description`, `domains` (subdomains match too), `backends`
+  - `actions`: supported player actions; optional `[unsupported_actions]` lists
+    actions a backend lacks (e.g. `webview = ["audio"]`). The server refuses
+    other actions with an error listing the supported ones, and
+    `mediactl plugins` shows both, so agents can check before calling.
   - optional `[auth]`: `login_url`, `cookie_url`, `logged_in_cookies`,
     `prefer_backend_when_logged_in`, `login_mode` (`plain` by default, or `controlled`)
 - `webview.html`: the page for the WebView backend.

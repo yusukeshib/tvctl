@@ -24,7 +24,8 @@ pub type Reply = std::sync::mpsc::Sender<Result<Value, String>>;
 /// Player ids shared by all backends.
 pub struct Players {
     next: AtomicU64,
-    owners: Mutex<HashMap<String, BackendKind>>,
+    /// Player id -> (backend, plugin name).
+    owners: Mutex<HashMap<String, (BackendKind, String)>>,
     /// Last time a player was added or removed (for the idle shutdown).
     changed: Mutex<Instant>,
 }
@@ -40,9 +41,12 @@ impl Default for Players {
 }
 
 impl Players {
-    pub fn allocate(&self, backend: BackendKind) -> String {
+    pub fn allocate(&self, backend: BackendKind, plugin: &str) -> String {
         let id = (self.next.fetch_add(1, Ordering::SeqCst) + 1).to_string();
-        self.owners.lock().unwrap().insert(id.clone(), backend);
+        self.owners
+            .lock()
+            .unwrap()
+            .insert(id.clone(), (backend, plugin.to_string()));
         *self.changed.lock().unwrap() = Instant::now();
         id
     }
@@ -54,8 +58,12 @@ impl Players {
     }
 
     fn owner(&self, id: &str) -> Result<BackendKind, String> {
+        self.entry(id).map(|(b, _)| b)
+    }
+
+    fn entry(&self, id: &str) -> Result<(BackendKind, String), String> {
         let owners = self.owners.lock().unwrap();
-        owners.get(id).copied().ok_or_else(|| {
+        owners.get(id).cloned().ok_or_else(|| {
             let mut ids: Vec<&String> = owners.keys().collect();
             ids.sort_by_key(|s| s.parse::<u64>().unwrap_or(u64::MAX));
             format!("no player with id {id:?} (open players: {ids:?})")
@@ -134,7 +142,7 @@ impl Router {
                     "paused": paused,
                     "subtitles": subtitles,
                 });
-                let id = self.players.allocate(backend);
+                let id = self.players.allocate(backend, plugin.name());
                 match backend {
                     // On failure the window stays open (showing the error) and keeps its id.
                     BackendKind::Webview => self.webview.call(
@@ -153,7 +161,25 @@ impl Router {
             }
             Request::Player { id, action } => {
                 let action = serde_json::to_value(action).expect("serializable");
-                match self.players.owner(&id)? {
+                let (backend, plugin) = self.players.entry(&id)?;
+                let name = action["action"].as_str().unwrap_or_default();
+                if let Some(m) = self.registry.get(&plugin).map(|p| &p.manifest)
+                    && !m.supports(name, backend)
+                {
+                    let supported: Vec<&str> = std::iter::once("status")
+                        .chain(
+                            m.actions
+                                .iter()
+                                .map(String::as_str)
+                                .filter(|a| m.supports(a, backend)),
+                        )
+                        .collect();
+                    return Err(format!(
+                        "{name} is not supported by {plugin} ({backend:?} backend); supported: {}",
+                        supported.join(", ")
+                    ));
+                }
+                match backend {
                     BackendKind::Webview => self.webview.call(
                         webview::Command::Player { id, action },
                         Duration::from_secs(15),
@@ -367,8 +393,7 @@ mod tests {
         Plugin::from_files(m, "test".into()).unwrap()
     }
 
-    const BOTH: &str =
-        "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\", \"chrome\"]\n";
+    const BOTH: &str = "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\", \"chrome\"]\nactions = [\"play\"]\n";
     const AUTH: &str = "[auth]\nlogin_url = \"https://x.com/l\"\ncookie_url = \"https://x.com\"\nlogged_in_cookies = [\"s\"]\nprefer_backend_when_logged_in = \"chrome\"\n";
 
     #[test]
@@ -394,7 +419,7 @@ mod tests {
     #[test]
     fn forced_backend_must_be_supported() {
         let p = plugin(
-            "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\"]\n",
+            "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\"]\nactions = [\"play\"]\n",
             &["webview.html"],
         );
         assert_eq!(
@@ -416,8 +441,8 @@ mod tests {
     #[test]
     fn player_ids_are_unique_and_owned() {
         let players = Players::default();
-        let a = players.allocate(BackendKind::Webview);
-        let b = players.allocate(BackendKind::Chrome);
+        let a = players.allocate(BackendKind::Webview, "x");
+        let b = players.allocate(BackendKind::Chrome, "y");
         assert_ne!(a, b);
         assert_eq!(players.owner(&a), Ok(BackendKind::Webview));
         assert_eq!(players.owner(&b), Ok(BackendKind::Chrome));
@@ -430,7 +455,11 @@ mod tests {
         );
         assert_eq!(players.count(), 1);
         // Ids are never reused.
-        let c = players.allocate(BackendKind::Webview);
+        let c = players.allocate(BackendKind::Webview, "x");
+        assert_eq!(
+            players.entry(&c),
+            Ok((BackendKind::Webview, "x".to_string()))
+        );
         assert!(c != a && c != b);
     }
 }

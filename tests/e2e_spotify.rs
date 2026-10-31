@@ -110,13 +110,14 @@ fn spotify_album_controls() {
         ["quality", id, "hd720"],
         ["speed", id, "1.5"],
     ] {
+        let e = env.err(&args);
         assert!(
-            env.err(&args)
-                .contains("not supported by the spotify plugin"),
-            "{args:?}"
+            e.contains(&format!("{} is not supported by spotify", args[0])),
+            "{args:?}: {e}"
         );
     }
-    assert!(env.err(&["audio", id, "ja"]).contains("not supported"));
+    let e = env.err(&["audio", id, "ja"]);
+    assert!(e.contains("audio is not supported by spotify"), "{e}");
 
     let shot = env.path("spotify.png");
     env.ok(&["screenshot", id, shot.to_str().unwrap()]);

@@ -22,7 +22,9 @@ use url::Url;
 
 static BUILTIN: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/plugins");
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, clap::ValueEnum,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendKind {
     Webview,
@@ -49,7 +51,39 @@ pub struct Manifest {
     pub domains: Vec<String>,
     /// Supported backends in order of preference.
     pub backends: Vec<BackendKind>,
+    /// Player actions this plugin supports (`status` is always supported).
+    pub actions: Vec<String>,
+    /// Actions from `actions` that a specific backend lacks.
+    #[serde(default)]
+    pub unsupported_actions: BTreeMap<BackendKind, Vec<String>>,
     pub auth: Option<Auth>,
+}
+
+/// Every player action a plugin can declare.
+pub const ACTIONS: &[&str] = &[
+    "play",
+    "pause",
+    "toggle",
+    "next",
+    "previous",
+    "seek",
+    "subtitles",
+    "audio",
+    "volume",
+    "speed",
+    "quality",
+];
+
+impl Manifest {
+    /// Whether `action` is available for this plugin on `backend`.
+    pub fn supports(&self, action: &str, backend: BackendKind) -> bool {
+        action == "status"
+            || (self.actions.iter().any(|a| a == action)
+                && !self
+                    .unsupported_actions
+                    .get(&backend)
+                    .is_some_and(|u| u.iter().any(|a| a == action)))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +144,19 @@ impl Plugin {
         }
         if manifest.backends.is_empty() {
             bail!("plugin {}: `backends` is empty", manifest.name);
+        }
+        for a in manifest
+            .actions
+            .iter()
+            .chain(manifest.unsupported_actions.values().flatten())
+        {
+            if !ACTIONS.contains(&a.as_str()) {
+                bail!(
+                    "plugin {}: unknown action {a:?} (known: {})",
+                    manifest.name,
+                    ACTIONS.join(", ")
+                );
+            }
         }
         for b in &manifest.backends {
             if !files.contains_key(b.required_file()) {
@@ -300,13 +347,13 @@ mod tests {
         write_plugin(
             dir.path(),
             "youtube",
-            "name = \"youtube\"\ndomains = [\"youtube.com\"]\nbackends = [\"chrome\"]\n",
+            "name = \"youtube\"\ndomains = [\"youtube.com\"]\nbackends = [\"chrome\"]\nactions = [\"play\"]\n",
             &["chrome.js"],
         );
         write_plugin(
             dir.path(),
             "example",
-            "name = \"example\"\ndomains = [\"example.com\"]\nbackends = [\"webview\"]\n",
+            "name = \"example\"\ndomains = [\"example.com\"]\nbackends = [\"webview\"]\nactions = [\"play\"]\n",
             &["webview.html"],
         );
         std::fs::create_dir_all(dir.path().join("not-a-plugin")).unwrap();
@@ -365,34 +412,40 @@ mod tests {
         };
         assert!(
             parse(
-                "name = \"x\"\ndomains = []\nbackends = [\"chrome\"]",
+                "name = \"x\"\ndomains = []\nbackends = [\"chrome\"]\nactions = [\"play\"]",
                 &["chrome.js"]
             )
             .is_err()
         );
-        assert!(parse("name = \"x\"\ndomains = [\"x.com\"]\nbackends = []", &[]).is_err());
         assert!(
             parse(
-                "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"vlc\"]",
+                "name = \"x\"\ndomains = [\"x.com\"]\nbackends = []\nactions = [\"play\"]",
                 &[]
             )
             .is_err()
         );
         assert!(
             parse(
-                "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"chrome\"]\ncolor = 1",
+                "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"vlc\"]\nactions = [\"play\"]",
+                &[]
+            )
+            .is_err()
+        );
+        assert!(
+            parse(
+                "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"chrome\"]\nactions = [\"play\"]\ncolor = 1",
                 &["chrome.js"]
             )
             .is_err()
         );
         assert!(
             parse(
-                "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\"]",
+                "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\"]\nactions = [\"play\"]",
                 &["chrome.js"]
             )
             .is_err()
         );
-        let auth = "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\", \"chrome\"]\n[auth]\nlogin_url = \"https://x.com/login\"\ncookie_url = \"https://x.com\"\nlogged_in_cookies = [\"sid\"]\nprefer_backend_when_logged_in = \"chrome\"\n";
+        let auth = "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\", \"chrome\"]\nactions = [\"play\"]\n[auth]\nlogin_url = \"https://x.com/login\"\ncookie_url = \"https://x.com\"\nlogged_in_cookies = [\"sid\"]\nprefer_backend_when_logged_in = \"chrome\"\n";
         let p = parse(auth, &["webview.html", "chrome.js"]).unwrap();
         assert_eq!(
             p.manifest.auth.unwrap().prefer_backend_when_logged_in,
@@ -401,11 +454,61 @@ mod tests {
     }
 
     #[test]
+    fn actions_are_validated_and_queried() {
+        let parse = |toml: &str| {
+            let mut m = BTreeMap::new();
+            m.insert("plugin.toml".to_string(), toml.to_string());
+            m.insert("webview.html".to_string(), String::new());
+            m.insert("chrome.js".to_string(), String::new());
+            Plugin::from_files(m, "t".into())
+        };
+        let base = "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\", \"chrome\"]\n";
+        let e = parse(&format!("{base}actions = [\"fly\"]")).unwrap_err();
+        assert!(format!("{e:#}").contains("unknown action"), "{e:#}");
+        let e = parse(&format!(
+            "{base}actions = [\"play\"]\n[unsupported_actions]\nwebview = [\"fly\"]"
+        ))
+        .unwrap_err();
+        assert!(format!("{e:#}").contains("unknown action"), "{e:#}");
+        assert!(parse(base).is_err(), "actions is required");
+        let p = parse(&format!(
+            "{base}actions = [\"play\", \"audio\"]\n[unsupported_actions]\nwebview = [\"audio\"]"
+        ))
+        .unwrap();
+        let m = &p.manifest;
+        assert!(m.supports("status", BackendKind::Webview));
+        assert!(m.supports("play", BackendKind::Webview));
+        assert!(m.supports("audio", BackendKind::Chrome));
+        assert!(!m.supports("audio", BackendKind::Webview));
+        assert!(!m.supports("seek", BackendKind::Chrome));
+    }
+
+    #[test]
+    fn builtin_actions() {
+        let r = Registry::load_with(None).unwrap();
+        let yt = &r.get("youtube").unwrap().manifest;
+        for a in ACTIONS {
+            assert!(yt.supports(a, BackendKind::Chrome), "youtube chrome {a}");
+        }
+        assert!(!yt.supports("audio", BackendKind::Webview));
+        let sp = &r.get("spotify").unwrap().manifest;
+        for a in [
+            "play", "pause", "toggle", "next", "previous", "seek", "volume",
+        ] {
+            assert!(sp.supports(a, BackendKind::Chrome), "spotify {a}");
+        }
+        for a in ["subtitles", "audio", "speed", "quality"] {
+            assert!(!sp.supports(a, BackendKind::Chrome), "spotify {a}");
+        }
+    }
+
+    #[test]
     fn manifest_validation_minimal() {
         let mut files = BTreeMap::new();
         files.insert(
             "plugin.toml".to_string(),
-            "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"chrome\"]\n".to_string(),
+            "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"chrome\"]\nactions = [\"play\"]\n"
+                .to_string(),
         );
         assert!(Plugin::from_files(files.clone(), "t".into()).is_err());
         files.insert("chrome.js".to_string(), String::new());
