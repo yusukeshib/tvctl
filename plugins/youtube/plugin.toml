@@ -1,0 +1,5 @@
+name = "youtube"
+description = "YouTube videos (watch, youtu.be, shorts, embed, live URLs)"
+domains = ["youtube.com", "youtu.be", "youtube-nocookie.com"]
+# Preference order when not logged in.
+backends = ["webview"]

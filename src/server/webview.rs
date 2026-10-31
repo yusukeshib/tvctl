@@ -1,38 +1,100 @@
-//! The player server: owns the native windows/webviews and serves requests from
-//! the Unix socket. Runs the GUI event loop on the main thread.
+//! Native WebView backend (tao + wry). Owns the GUI event loop on the main thread.
+//!
+//! Each player is a window whose WebView loads the plugin's `webview.html` from a
+//! loopback HTTP server (so embeds get a real origin) and runs the plugin's
+//! `window.__play.run(action)` through a small host bridge.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
+use tao::event_loop::{
+    ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget,
+};
 use tao::window::{Fullscreen, Window, WindowBuilder, WindowId};
 use wry::{WebView, WebViewBuilder};
 
+use super::{Players, Reply};
 use crate::client;
 use crate::layout::{self, Rect};
-use crate::protocol::{Request, Response, Switch, WindowOpts};
+use crate::plugin::{Plugin, Registry};
+use crate::protocol::{Switch, WindowOpts};
 
-const PLAYER_HTML: &str = include_str!("../assets/player.html");
-const EMBED_JS: &str = include_str!("../assets/embed.js");
+/// Main-frame bridge between the host and the plugin's `window.__play`.
+const HOST_BRIDGE: &str = r#"(() => {
+  if (window.__playHost) return;
+  const post = (m) => window.ipc.postMessage(JSON.stringify(m));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  window.__playHost = {
+    run: async (req, action) => {
+      try {
+        const end = Date.now() + 15000;
+        while (!(window.__play && window.__play.run)) {
+          if (Date.now() > end) throw new Error("plugin page did not define window.__play");
+          await sleep(50);
+        }
+        post({ type: "reply", req, ok: true, result: await window.__play.run(action) });
+      } catch (e) {
+        post({ type: "reply", req, ok: false, error: String((e && e.message) || e) });
+      }
+    },
+  };
+  document.addEventListener("DOMContentLoaded", () => post({ type: "ready" }));
+})();"#;
 
-type Reply = mpsc::Sender<Result<Value, String>>;
+pub enum Command {
+    Open {
+        id: String,
+        plugin: Box<Plugin>,
+        action: Value,
+        window: Box<WindowOpts>,
+    },
+    Player {
+        id: String,
+        action: Value,
+    },
+    Window {
+        id: String,
+        opts: WindowOpts,
+    },
+    Close {
+        id: String,
+    },
+    List,
+    Shutdown,
+}
 
 enum UserEvent {
-    Request(Request, Reply),
+    Command(Command, Reply),
     /// Message posted by a player page via `window.ipc.postMessage`.
     Ipc {
         player: String,
         body: String,
     },
+}
+
+/// Sends commands to the event loop from other threads.
+pub struct Handle {
+    proxy: EventLoopProxy<UserEvent>,
+}
+
+impl Handle {
+    pub fn call(&self, cmd: Command, timeout: Duration) -> Result<Value, String> {
+        let (tx, rx) = mpsc::channel();
+        self.proxy
+            .send_event(UserEvent::Command(cmd, tx))
+            .map_err(|_| "server is shutting down".to_string())?;
+        rx.recv_timeout(timeout)
+            .unwrap_or_else(|_| Err("timed out waiting for the player".to_string()))
+    }
 }
 
 #[derive(Deserialize)]
@@ -48,6 +110,7 @@ enum IpcMessage {
 }
 
 struct Player {
+    service: String,
     window: Window,
     webview: WebView,
     page_ready: bool,
@@ -62,68 +125,64 @@ struct Pending {
     reply: Reply,
 }
 
-struct Server {
+struct State {
     proxy: EventLoopProxy<UserEvent>,
+    players_registry: Arc<Players>,
     http_port: u16,
     players: HashMap<String, Player>,
     windows: HashMap<WindowId, String>,
     pending: HashMap<u64, Pending>,
     next_req: u64,
-    next_player: u64,
 }
 
-pub fn run() -> Result<()> {
-    let socket = client::socket_path();
-    if client::is_running() {
-        bail!("server already running at {}", socket.display());
-    }
-    let _ = std::fs::remove_file(&socket);
-    let listener =
-        UnixListener::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
+pub struct Loop {
+    event_loop: EventLoop<UserEvent>,
+    state: State,
+}
 
+/// Creates the event loop (must be called on the main thread) and its handle.
+pub fn create(registry: Arc<Registry>, players: Arc<Players>) -> Result<(Loop, Handle)> {
     let http = TcpListener::bind("127.0.0.1:0").context("binding page server")?;
     let http_port = http.local_addr()?.port();
-    std::thread::spawn(move || serve_page(http));
+    std::thread::spawn(move || serve_plugin_files(http, &registry));
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
-
-    let accept_proxy = proxy.clone();
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let proxy = accept_proxy.clone();
-            std::thread::spawn(move || handle_connection(stream, proxy));
-        }
-    });
-
-    eprintln!(
-        "play server listening on {} (pid {})",
-        socket.display(),
-        std::process::id()
-    );
-    let mut server = Server {
+    let handle = Handle {
+        proxy: proxy.clone(),
+    };
+    let state = State {
         proxy,
+        players_registry: players,
         http_port,
         players: HashMap::new(),
         windows: HashMap::new(),
         pending: HashMap::new(),
         next_req: 1,
-        next_player: 1,
     };
+    Ok((Loop { event_loop, state }, handle))
+}
+
+/// Runs the event loop; never returns.
+pub fn run(l: Loop) -> ! {
+    let Loop {
+        event_loop,
+        mut state,
+    } = l;
     event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
-            Event::UserEvent(UserEvent::Request(req, reply)) => {
-                server.handle_request(req, reply, target, control_flow)
+            Event::UserEvent(UserEvent::Command(cmd, reply)) => {
+                state.handle(cmd, reply, target, control_flow)
             }
-            Event::UserEvent(UserEvent::Ipc { player, body }) => server.handle_ipc(&player, &body),
+            Event::UserEvent(UserEvent::Ipc { player, body }) => state.handle_ipc(&player, &body),
             Event::WindowEvent {
                 window_id,
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                if let Some(id) = server.windows.get(&window_id).cloned() {
-                    server.close_player(&id);
+                if let Some(id) = state.windows.get(&window_id).cloned() {
+                    state.close_player(&id);
                 }
             }
             Event::LoopDestroyed => {
@@ -134,67 +193,52 @@ pub fn run() -> Result<()> {
     })
 }
 
-/// Serves the player page over HTTP so the YouTube embed gets a real origin/referrer.
-fn serve_page(listener: TcpListener) {
+/// Serves `GET /plugins/<name>/<file>` from the plugin registry.
+fn serve_plugin_files(listener: TcpListener, registry: &Registry) {
     for mut stream in listener.incoming().flatten() {
         let mut buf = [0u8; 4096];
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-        let _ = stream.read(&mut buf);
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let head = String::from_utf8_lossy(&buf[..n]);
+        let path = head.split_whitespace().nth(1).unwrap_or("/");
+        let path = path.split('?').next().unwrap_or(path);
+        let body = path
+            .strip_prefix("/plugins/")
+            .and_then(|rest| rest.split_once('/'))
+            .and_then(|(name, file)| Some((file, registry.get(name)?.file(file)?)));
+        let (status, content_type, body) = match body {
+            Some((file, content)) => ("200 OK", content_type(file), content),
+            None => ("404 Not Found", "text/plain", "not found"),
+        };
         let header = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-            PLAYER_HTML.len()
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+            body.len()
         );
         let _ = stream.write_all(header.as_bytes());
-        let _ = stream.write_all(PLAYER_HTML.as_bytes());
+        let _ = stream.write_all(body.as_bytes());
     }
 }
 
-fn handle_connection(stream: UnixStream, proxy: EventLoopProxy<UserEvent>) {
-    let mut line = String::new();
-    let Ok(read) = stream.try_clone() else { return };
-    if BufReader::new(read).read_line(&mut line).is_err() {
-        return;
+fn content_type(file: &str) -> &'static str {
+    match file.rsplit('.').next() {
+        Some("html") => "text/html",
+        Some("js") => "text/javascript",
+        Some("css") => "text/css",
+        Some("json") => "application/json",
+        _ => "text/plain",
     }
-    let result = match serde_json::from_str::<Request>(&line) {
-        Ok(req) => {
-            let timeout = match req {
-                Request::Open { .. } => Duration::from_secs(40),
-                _ => Duration::from_secs(15),
-            };
-            let (tx, rx) = mpsc::channel();
-            if proxy.send_event(UserEvent::Request(req, tx)).is_err() {
-                Err("server is shutting down".to_string())
-            } else {
-                rx.recv_timeout(timeout)
-                    .unwrap_or_else(|_| Err("timed out waiting for the player".to_string()))
-            }
-        }
-        Err(e) => Err(format!("bad request: {e}")),
-    };
-    let mut stream = stream;
-    let mut out = serde_json::to_string(&Response::from(result)).expect("serializable");
-    out.push('\n');
-    let _ = stream.write_all(out.as_bytes());
 }
 
-impl Server {
-    fn handle_request(
+impl State {
+    fn handle(
         &mut self,
-        req: Request,
+        cmd: Command,
         reply: Reply,
         target: &EventLoopWindowTarget<UserEvent>,
         control_flow: &mut ControlFlow,
     ) {
-        match req {
-            Request::Ping => {
-                let _ = reply.send(Ok(json!({
-                    "pid": std::process::id(),
-                    "socket": client::socket_path(),
-                    "log": client::log_path(),
-                    "players": self.players.len(),
-                })));
-            }
-            Request::Shutdown => {
+        match cmd {
+            Command::Shutdown => {
                 let ids: Vec<String> = self.players.keys().cloned().collect();
                 for id in ids {
                     self.close_player(&id);
@@ -202,57 +246,44 @@ impl Server {
                 let _ = reply.send(Ok(json!({ "stopped": true })));
                 *control_flow = ControlFlow::Exit;
             }
-            Request::List => {
-                let mut list: Vec<Value> = self
+            Command::List => {
+                let list: Vec<Value> = self
                     .players
                     .iter()
                     .map(|(id, p)| {
                         json!({
                             "id": id,
+                            "service": p.service,
+                            "backend": "webview",
                             "title": p.last_status.get("title"),
-                            "video_id": p.last_status.get("video_id"),
                             "window": window_info(p),
                         })
                     })
                     .collect();
-                list.sort_by_key(|v| v["id"].as_str().and_then(|s| s.parse::<u64>().ok()));
-                let _ = reply.send(Ok(json!({ "players": list })));
+                let _ = reply.send(Ok(Value::Array(list)));
             }
-            Request::Open {
-                video_id,
-                start,
-                paused,
-                subtitles,
+            Command::Open {
+                id,
+                plugin,
+                action,
                 window,
-            } => match self.create_player(target, &window) {
-                Ok(id) => {
-                    let action = json!({
-                        "action": "open",
-                        "video_id": video_id,
-                        "start": start,
-                        "paused": paused,
-                        "subtitles": subtitles,
-                    });
-                    self.dispatch(&id, action, reply);
-                }
+            } => match self.create_player(target, &id, &plugin, &window) {
+                Ok(()) => self.dispatch(&id, action, reply),
                 Err(e) => {
+                    self.players_registry.remove(&id);
                     let _ = reply.send(Err(format!("{e:#}")));
                 }
             },
-            Request::Player { id, action } => {
+            Command::Player { id, action } => {
                 if self.players.contains_key(&id) {
-                    self.dispatch(
-                        &id,
-                        serde_json::to_value(action).expect("serializable"),
-                        reply,
-                    );
+                    self.dispatch(&id, action, reply);
                 } else {
-                    let _ = reply.send(Err(self.unknown(&id)));
+                    let _ = reply.send(Err(format!("no player with id {id:?}")));
                 }
             }
-            Request::Window { id, opts } => {
+            Command::Window { id, opts } => {
                 let Some(player) = self.players.get_mut(&id) else {
-                    let _ = reply.send(Err(self.unknown(&id)));
+                    let _ = reply.send(Err(format!("no player with id {id:?}")));
                     return;
                 };
                 // Leaving native fullscreen is animated on macOS; resizing during the
@@ -270,60 +301,61 @@ impl Server {
                     std::thread::spawn(move || {
                         std::thread::sleep(Duration::from_millis(900));
                         let _ = proxy
-                            .send_event(UserEvent::Request(Request::Window { id, opts }, reply));
+                            .send_event(UserEvent::Command(Command::Window { id, opts }, reply));
                     });
                     return;
                 }
                 apply_window_opts(player, &opts);
                 self.dispatch(&id, json!({ "action": "status" }), reply);
             }
-            Request::Close { id } => {
+            Command::Close { id } => {
                 if self.players.contains_key(&id) {
                     self.close_player(&id);
                     let _ = reply.send(Ok(json!({ "id": id, "closed": true })));
                 } else {
-                    let _ = reply.send(Err(self.unknown(&id)));
+                    let _ = reply.send(Err(format!("no player with id {id:?}")));
                 }
             }
         }
     }
 
-    fn unknown(&self, id: &str) -> String {
-        let mut ids: Vec<&String> = self.players.keys().collect();
-        ids.sort();
-        format!("no player with id {id:?} (open players: {ids:?})")
-    }
-
     fn create_player(
         &mut self,
         target: &EventLoopWindowTarget<UserEvent>,
+        id: &str,
+        plugin: &Plugin,
         opts: &WindowOpts,
-    ) -> Result<String> {
-        let id = self.next_player.to_string();
-        self.next_player += 1;
+    ) -> Result<()> {
         let (w, h) = opts.size.unwrap_or((960.0, 540.0));
         let window = WindowBuilder::new()
-            .with_title(format!("play [{id}]"))
+            .with_title(format!("play [{id}] {}", plugin.name()))
             .with_inner_size(LogicalSize::new(w, h))
             .with_visible(false)
             .build(target)
             .context("creating window")?;
         let proxy = self.proxy.clone();
-        let ipc_id = id.clone();
-        let webview = WebViewBuilder::new()
-            .with_url(format!("http://127.0.0.1:{}/?player={id}", self.http_port))
+        let ipc_id = id.to_string();
+        let mut builder = WebViewBuilder::new()
+            .with_url(format!(
+                "http://127.0.0.1:{}/plugins/{}/webview.html",
+                self.http_port,
+                plugin.name()
+            ))
             .with_autoplay(true)
-            .with_initialization_script_for_main_only(EMBED_JS, false)
             .with_background_color((0, 0, 0, 255))
+            .with_initialization_script(HOST_BRIDGE)
             .with_ipc_handler(move |req| {
                 let _ = proxy.send_event(UserEvent::Ipc {
                     player: ipc_id.clone(),
                     body: req.body().clone(),
                 });
-            })
-            .build(&window)
-            .context("creating webview")?;
+            });
+        if let Some(frame_js) = plugin.file("frame.js") {
+            builder = builder.with_initialization_script_for_main_only(frame_js, false);
+        }
+        let webview = builder.build(&window).context("creating webview")?;
         let mut player = Player {
+            service: plugin.name().to_string(),
             window,
             webview,
             page_ready: false,
@@ -344,13 +376,14 @@ impl Server {
         }
         player.window.set_visible(true);
         player.window.set_focus();
-        self.windows.insert(player.window.id(), id.clone());
-        self.players.insert(id.clone(), player);
-        Ok(id)
+        self.windows.insert(player.window.id(), id.to_string());
+        self.players.insert(id.to_string(), player);
+        Ok(())
     }
 
     fn close_player(&mut self, id: &str) {
         if let Some(player) = self.players.remove(id) {
+            self.players_registry.remove(id);
             self.windows.remove(&player.window.id());
             for p in self.pending.values() {
                 if p.player == id {
@@ -374,7 +407,7 @@ impl Server {
                 reply,
             },
         );
-        let script = format!("window.__play.run({req}, {action})");
+        let script = format!("window.__playHost.run({req}, {action})");
         let player = self.players.get_mut(id).expect("checked by caller");
         if player.page_ready {
             run_script(player, &script);
@@ -414,10 +447,16 @@ impl Server {
                 };
                 let response = if ok {
                     let result = result.unwrap_or(Value::Null);
-                    if result.get("loaded").is_some() {
+                    if result.is_object() {
                         player.last_status = result.clone();
                     }
-                    Ok(json!({ "id": id, "player": result, "window": window_info(player) }))
+                    Ok(json!({
+                        "id": id,
+                        "service": player.service,
+                        "backend": "webview",
+                        "player": result,
+                        "window": window_info(player),
+                    }))
                 } else {
                     Err(error.unwrap_or_else(|| "player error".into()))
                 };
@@ -483,7 +522,6 @@ fn apply_window_opts(player: &mut Player, opts: &WindowOpts) {
 
 fn window_info(player: &Player) -> Value {
     let window = &player.window;
-    let sf = window.scale_factor();
     let (outer, _) = logical_outer(window);
     let inner = content_size(window);
     json!({
@@ -493,7 +531,7 @@ fn window_info(player: &Player) -> Value {
         "fullscreen": window.fullscreen().is_some(),
         "on_top": player.on_top,
         "work_area": work_area(window),
-        "scale_factor": sf,
+        "scale_factor": window.scale_factor(),
     })
 }
 

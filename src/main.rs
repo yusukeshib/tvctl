@@ -1,19 +1,21 @@
 mod client;
 mod layout;
+mod plugin;
 mod protocol;
 mod server;
 mod timeparse;
-mod youtube;
 
 use anyhow::{Result, anyhow};
 use clap::{Args, Parser, Subcommand};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::layout::Layout;
 use crate::protocol::{PlayerAction, Request, Switch, WindowOpts};
 use crate::timeparse::Seek;
 
-/// Play YouTube videos in native windows and control them from the command line.
+/// Play videos (YouTube, ...) in windows and control them from the command line.
+///
+/// Each supported service is a plugin (`play plugins` lists them).
 ///
 /// Start the server once (`play server up`), open a video (`play open URL`, which
 /// prints the new player's `id`), then control it with `play <command> <ID> ...`.
@@ -32,10 +34,13 @@ enum Cmd {
         #[command(subcommand)]
         action: ServerCmd,
     },
-    /// Open a YouTube URL in a new player window and print its id and status.
+    /// Open a URL in a new player window and print its id and status.
     Open {
-        /// YouTube URL (watch, youtu.be, shorts, embed, live) or video id.
+        /// Video URL of a supported service (see `play plugins`).
         url: String,
+        /// Force a backend instead of the plugin's default.
+        #[arg(long, value_enum)]
+        backend: Option<plugin::BackendKind>,
         /// Start position (e.g. 90, 1:30, 1m30s). Overrides `t=` in the URL.
         #[arg(long)]
         start: Option<String>,
@@ -56,6 +61,8 @@ enum Cmd {
     },
     /// List open players.
     List,
+    /// List installed plugins (built-in and from the external plugin directory).
+    Plugins,
     /// Show a player's playback and window status.
     Status { id: String },
     /// Resume playback.
@@ -183,8 +190,16 @@ fn run(cmd: Cmd) -> Result<Value> {
                 ServerCmd::Status => client::server_status(),
             };
         }
+        Cmd::Plugins => {
+            let registry = plugin::Registry::load()?;
+            return Ok(json!({
+                "external_dir": plugin::external_dir(),
+                "plugins": registry.plugins(),
+            }));
+        }
         Cmd::Open {
             url,
+            backend,
             start,
             paused,
             subtitles,
@@ -192,13 +207,10 @@ fn run(cmd: Cmd) -> Result<Value> {
             fullscreen,
             on_top,
         } => {
-            let video = youtube::parse(&url)?;
-            let start = match start {
-                Some(s) => Some(timeparse::parse_duration(&s)?),
-                None => video.start,
-            };
+            let start = start.map(|s| timeparse::parse_duration(&s)).transpose()?;
             Request::Open {
-                video_id: video.video_id,
+                url,
+                backend,
                 start,
                 paused,
                 subtitles,

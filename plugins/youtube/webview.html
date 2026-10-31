@@ -12,7 +12,6 @@
 <div id="player"></div>
 <script>
 (() => {
-  const post = (m) => window.ipc.postMessage(JSON.stringify(m));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const STATES = { "-1": "unstarted", 0: "ended", 1: "playing", 2: "paused", 3: "buffering", 5: "cued" };
   const ERRORS = {
@@ -260,16 +259,33 @@
     }
   }
 
+  // Extracts the video id and `t=`/`start=` offset from a YouTube URL.
+  function parseUrl(raw) {
+    const u = new URL(raw);
+    const host = u.hostname.replace(/^(www|m|music)\./, "");
+    const parts = u.pathname.split("/").filter(Boolean);
+    let id = null;
+    if (host === "youtu.be") id = parts[0];
+    else if (parts[0] === "watch") id = u.searchParams.get("v");
+    else if (["shorts", "embed", "live", "v"].includes(parts[0])) id = parts[1];
+    if (!id || !/^[A-Za-z0-9_-]{11}$/.test(id)) throw new Error("could not find a video id in " + raw);
+    return { id, start: parseTime(u.searchParams.get("t") || u.searchParams.get("start")) };
+  }
+
+  function parseTime(s) {
+    if (!s) return null;
+    if (/^\d+(\.\d+)?$/.test(s)) return Number(s);
+    const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(s);
+    return m ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0) : null;
+  }
+
   window.__play = {
-    run: async (req, action) => {
-      try {
-        post({ type: "reply", req, ok: true, result: await run(action) });
-      } catch (e) {
-        post({ type: "reply", req, ok: false, error: String((e && e.message) || e) });
-      }
+    run: (action) => {
+      if (action.action !== "open") return run(action);
+      const { id, start } = parseUrl(action.url);
+      return open({ ...action, video_id: id, start: action.start ?? start });
     },
   };
-  post({ type: "ready" });
 })();
 </script>
 </body>

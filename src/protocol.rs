@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::layout::Layout;
+use crate::plugin::BackendKind;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -11,11 +12,13 @@ pub enum Request {
     Shutdown,
     List,
     Open {
-        video_id: String,
+        url: String,
         start: Option<f64>,
         paused: bool,
         subtitles: Option<String>,
         window: WindowOpts,
+        /// Force a backend instead of choosing automatically.
+        backend: Option<BackendKind>,
     },
     Player {
         id: String,
@@ -30,7 +33,7 @@ pub enum Request {
     },
 }
 
-/// Actions executed by the player page (forwarded to JavaScript as-is).
+/// Actions executed by the plugin adapter (forwarded to JavaScript as-is).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum PlayerAction {
@@ -53,7 +56,7 @@ pub enum PlayerAction {
     Speed {
         rate: f64,
     },
-    /// YouTube quality level: auto, tiny, small, medium, large, hd720, hd1080, hd1440, hd2160, highres.
+    /// Quality level such as `auto`, `hd720`, `hd1080` (plugin-specific).
     Quality {
         level: String,
     },
