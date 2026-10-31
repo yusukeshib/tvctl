@@ -23,12 +23,8 @@ cargo install tvctl        # or, from a checkout: cargo install --path .
 
 - `dist/tvctl-plugin.zip`: an [Agent Plugins 1.0](https://agent-plugins.org)
   package (`plugin.json` at the root, `skills/tvctl/SKILL.md`) for ChatGPT and
-  Codex. Upload it on the Plugins page of the OpenAI Platform dashboard to publish
-  it, or install it locally: unzip it to `~/.codex/plugins/tvctl` and list it in
-  your personal marketplace `~/.agents/plugins/marketplace.json` (source
-  `{"source": "local", "path": "./.codex/plugins/tvctl"}`), then install it from
-  the Plugins directory of the ChatGPT desktop app or with
-  `codex plugin add tvctl@<marketplace name>`.
+  Codex. To install it, give the zip to ChatGPT and ask it to install the plugin.
+  To publish it, upload it on the Plugins page of the OpenAI Platform dashboard.
 - `dist/tvctl-skill.zip`: the bare skill, for "Upload a skill" in ChatGPT or
   Claude, or copy `skills/tvctl` into any agent's skills directory.
 
