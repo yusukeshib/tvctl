@@ -43,7 +43,7 @@ pub struct Backend {
 }
 
 fn chrome_path() -> Result<PathBuf> {
-    if let Some(p) = std::env::var_os("MEDIACTL_CHROME") {
+    if let Some(p) = std::env::var_os("TVCTL_CHROME") {
         return Ok(PathBuf::from(p));
     }
     let candidates = [
@@ -55,7 +55,7 @@ fn chrome_path() -> Result<PathBuf> {
         .iter()
         .map(PathBuf::from)
         .find(|p| p.exists())
-        .ok_or_else(|| anyhow!("Google Chrome not found (set MEDIACTL_CHROME to its executable)"))
+        .ok_or_else(|| anyhow!("Google Chrome not found (set TVCTL_CHROME to its executable)"))
 }
 
 fn read_devtools_port(profile: &Path) -> Option<String> {
@@ -255,7 +255,7 @@ impl Backend {
         if let Some(adapter) = plugin.file("chrome.js") {
             inst.cdp.call(
                 "Page.addScriptToEvaluateOnNewDocument",
-                json!({ "source": format!("if (!window.__mediactl) {{\n{adapter}\n}}") }),
+                json!({ "source": format!("if (!window.__tvctl) {{\n{adapter}\n}}") }),
                 Some(&session_id),
                 Duration::from_secs(5),
             )?;
@@ -618,7 +618,7 @@ fn run_adapter(
         .file("chrome.js")
         .context("plugin has no chrome.js")?;
     let expr = format!(
-        "(async () => {{\nif (!window.__mediactl) {{\n{adapter}\n}}\nreturn await window.__mediactl.run({action});\n}})()"
+        "(async () => {{\nif (!window.__tvctl) {{\n{adapter}\n}}\nreturn await window.__tvctl.run({action});\n}})()"
     );
     evaluate(inst, player, &expr, timeout)
 }

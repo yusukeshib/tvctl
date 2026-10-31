@@ -1,10 +1,11 @@
-# mediactl
+# tvctl
 
-A Rust CLI that lets agents (or people) play videos in windows and control them
-from the command line. Every command prints JSON to stdout; errors go to stderr
-with exit code 1.
+A Rust CLI that lets agents (or people) play videos and music in windows on this
+computer and control them from the command line, like a TV remote for your
+screen. (It does not control physical TVs.) Every command prints JSON to
+stdout; errors go to stderr with exit code 1.
 
-Services are plugins (`mediactl plugins` lists them). Currently: YouTube and
+Services are plugins (`tvctl plugins` lists them). Currently: YouTube and
 Spotify (web player).
 macOS only for now.
 
@@ -17,44 +18,44 @@ cargo install --path .
 ## Usage
 
 ```sh
-mediactl open https://youtu.be/jNQXAC9IVRw --layout bottom-right --size 640x360
+tvctl open https://youtu.be/jNQXAC9IVRw --layout bottom-right --size 640x360
 # => {"id": "1", "service": "youtube", "backend": "webview", "player": {...}, "window": {...}}
 
-mediactl status 1
-mediactl play 1 / mediactl pause 1 / mediactl toggle 1
-mediactl next 1 / mediactl prev 1        # next/previous track or playlist entry
-mediactl seek 1 1:30                   # absolute (90, 1:30, 1m30s)
-mediactl seek 1 -10                    # relative (+10, -10)
-mediactl forward 1 30 / mediactl back 1   # default 10 s
-mediactl subtitles 1 ja                # Japanese; auto-translated if there is no Japanese track
-mediactl subtitles 1 list | on | off
-mediactl audio 1 list | ja             # audio track (e.g. dubbing), where supported
-mediactl quality 1 hd1080              # auto, small, medium, large, hd720, hd1080, ...
-mediactl volume 1 50 / mediactl mute 1 / mediactl unmute 1
-mediactl speed 1 1.5
-mediactl window 1 --layout left        # left/right/top/bottom/top-left/.../center/maximize
-mediactl window 1 --layout bottom-right --size 480x270   # anchored to a corner
-mediactl window 1 --size 1280x720 --position 100,50 --on-top on
-mediactl fullscreen 1                  # toggle (or on/off)
-mediactl screenshot 1 shot.png         # PNG of the player window, even when covered
-mediactl list
-mediactl close 1
+tvctl status 1
+tvctl play 1 / tvctl pause 1 / tvctl toggle 1
+tvctl next 1 / tvctl prev 1         # next/previous track or playlist entry
+tvctl seek 1 1:30                    # absolute (90, 1:30, 1m30s)
+tvctl seek 1 -10                     # relative (+10, -10)
+tvctl forward 1 30 / tvctl back 1    # default 10 s
+tvctl subtitles 1 ja                 # Japanese; auto-translated if there is no Japanese track
+tvctl subtitles 1 list | on | off
+tvctl audio 1 list | ja              # audio track (e.g. dubbing), where supported
+tvctl quality 1 hd1080               # values: `available_qualities` in status
+tvctl volume 1 50 / tvctl mute 1 / tvctl unmute 1
+tvctl speed 1 1.5
+tvctl window 1 --layout left         # left/right/top/bottom/top-left/.../center/maximize
+tvctl window 1 --layout bottom-right --size 480x270   # anchored to a corner
+tvctl window 1 --size 1280x720 --position 100,50 --on-top on
+tvctl fullscreen 1                   # toggle (or on/off)
+tvctl screenshot 1 shot.png          # PNG of the player window, even when covered
+tvctl list
+tvctl close 1
 
-mediactl auth login youtube            # sign in once in mediactl's Chrome profile
-mediactl auth login spotify
-mediactl auth status
-mediactl plugins
+tvctl auth login youtube             # sign in once in tvctl's Chrome profile
+tvctl auth login spotify
+tvctl auth status
+tvctl plugins                        # services, domains, supported actions
 ```
 
 The background server starts on demand (`open`, `auth`) and stops a few seconds
-after the last player closes (`MEDIACTL_IDLE_SECS`, default 5), quitting
-mediactl's Chrome too. `mediactl server up` keeps it running without players
-(avoids restarting Chrome between uses); `mediactl server down` stops it and
-closes all players; `mediactl server status` shows its state.
+after the last player closes (`TVCTL_IDLE_SECS`, default 5), quitting
+tvctl's Chrome too. `tvctl server up` keeps it running without players
+(avoids restarting Chrome between uses); `tvctl server down` stops it and
+closes all players; `tvctl server status` shows its state.
 
 `--size` is the video area; layouts without `--size` fill their screen region.
-`mediactl --help` describes the workflow, the JSON output and error format, and
-examples; `mediactl <command> --help` describes each argument.
+`tvctl --help` describes the workflow, the JSON output and error format, and
+examples; `tvctl <command> --help` describes each argument.
 
 ## Backends
 
@@ -62,9 +63,9 @@ examples; `mediactl <command> --help` describes each argument.
   for services with public embed APIs (YouTube logged out).
 - **chrome**: an app window of Google Chrome, driven through the Chrome DevTools
   Protocol, using a dedicated profile at
-  `~/Library/Application Support/mediactl/chrome-profile`. Used where a login or
+  `~/Library/Application Support/tvctl/chrome-profile`. Used where a login or
   DRM is needed. Chrome refuses DevTools control of your everyday profile, so
-  mediactl has its own; sign in to each service once with `mediactl auth login`.
+  tvctl has its own; sign in to each service once with `tvctl auth login`.
   Always-on-top is not available in this backend.
 
 A plugin lists its backends in order of preference. If a plugin declares
@@ -72,8 +73,8 @@ A plugin lists its backends in order of preference. If a plugin declares
 (YouTube: Chrome, so Premium accounts get no ads). `open --backend` overrides.
 
 `auth login` opens the login page in a plain Chrome (not controlled, because
-Google refuses sign-in in automated browsers) on mediactl's profile. Sign in, then
-quit that Chrome with Cmd+Q; mediactl then checks the login cookies.
+Google refuses sign-in in automated browsers) on tvctl's profile. Sign in, then
+quit that Chrome with Cmd+Q; tvctl then checks the login cookies.
 
 ## Services
 
@@ -97,7 +98,7 @@ Each service is a directory `plugins/<name>/`:
   - `actions`: supported player actions; optional `[unsupported_actions]` lists
     actions a backend lacks (e.g. `webview = ["audio"]`). The server refuses
     other actions with an error listing the supported ones, and
-    `mediactl plugins` shows both, so agents can check before calling.
+    `tvctl plugins` shows both, so agents can check before calling.
   - optional `[auth]`: `login_url`, `cookie_url`, `logged_in_cookies`,
     `prefer_backend_when_logged_in`, `login_mode` (`plain` by default, or `controlled`)
 - `webview.html`: the page for the WebView backend.
@@ -105,27 +106,27 @@ Each service is a directory `plugins/<name>/`:
 - `chrome.js`: the adapter for the Chrome backend. It is loaded into every
   document of the player window, so it can restore its page state after reloads.
 
-Adapters define `window.__mediactl.run(action)`, which returns a status object.
+Adapters define `window.__tvctl.run(action)`, which returns a status object.
 Actions: `open {url, start, paused, subtitles}`, `status`, `play`, `pause`,
 `toggle`, `next`, `previous`, `seek {seconds, relative}`, `subtitles {lang}`, `audio {lang}`,
 `volume {level, muted}`, `speed {rate}`, `quality {level}`. Unsupported actions
 throw. In the Chrome backend, `open` may return `{"navigate": url}` to be loaded
 at another URL first.
 
-Built-in plugins are compiled into the binary. Plugins in `$MEDIACTL_PLUGIN_DIR`
-or `~/.config/mediactl/plugins/<name>/` are loaded when the server starts and
+Built-in plugins are compiled into the binary. Plugins in `$TVCTL_PLUGIN_DIR`
+or `~/.config/tvctl/plugins/<name>/` are loaded when the server starts and
 override built-ins with the same name.
 
 ## Environment
 
-- `MEDIACTL_SOCKET`: server socket (default `$TMPDIR/mediactl.sock`; the log is
-  next to it as `mediactl.log`)
-- `MEDIACTL_DATA_DIR`: data directory (Chrome profile, login state)
-- `MEDIACTL_PLUGIN_DIR`: external plugin directory
-- `MEDIACTL_CHROME`: Chrome executable
-- `MEDIACTL_IDLE_SECS`: idle time before an on-demand server stops (default 5)
+- `TVCTL_SOCKET`: server socket (default `$TMPDIR/tvctl.sock`; the log is
+  next to it as `tvctl.log`)
+- `TVCTL_DATA_DIR`: data directory (Chrome profile, login state)
+- `TVCTL_PLUGIN_DIR`: external plugin directory
+- `TVCTL_CHROME`: Chrome executable
+- `TVCTL_IDLE_SECS`: idle time before an on-demand server stops (default 5)
 
-For plugin development, the hidden command `mediactl __eval <ID> <JS>` evaluates
+For plugin development, the hidden command `tvctl __eval <ID> <JS>` evaluates
 JavaScript in a Chrome-backend player page and prints the (awaited) result.
 
 ## Tests
@@ -134,11 +135,11 @@ JavaScript in a Chrome-backend player page and prints the (awaited) result.
 cargo test                                                   # unit tests
 cargo test --test e2e_fake -- --ignored --test-threads=1     # all commands, both backends, offline
 cargo test --test e2e_youtube -- --ignored --test-threads=1  # real YouTube (network)
-MEDIACTL_E2E_PROFILE="$HOME/Library/Application Support/mediactl" \
+TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl" \
   cargo test --test e2e_spotify -- --ignored --test-threads=1  # real Spotify (needs login)
 ```
 
 The end-to-end tests open windows. `e2e_fake` uses a fake plugin and a local site.
 `e2e_youtube` uses a fresh logged-out profile, so ads may play and the tests
 wait for them. To use your logged-in profile instead, set
-`MEDIACTL_E2E_PROFILE="$HOME/Library/Application Support/mediactl"`.
+`TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl"`.

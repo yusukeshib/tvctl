@@ -1,7 +1,7 @@
 // Fake adapter used by the end-to-end tests. It implements the whole plugin
 // contract on an in-memory player so tests are deterministic and offline.
 // The same file serves both backends (webview.html loads it with <script src>).
-if (!window.__mediactl) window.__mediactl = (() => {
+if (!window.__tvctl) window.__tvctl = (() => {
   const DURATION = 600;
   const QUALITIES = ["hd1080", "hd720", "large", "medium", "small", "auto"];
   const TRACKS = [

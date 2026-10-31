@@ -1,12 +1,12 @@
 // Spotify Web Player adapter (Chrome backend). The web player has no public
 // JavaScript API, so this drives its UI controls, found by `data-testid`.
-window.__mediactl = (() => {
+window.__tvctl = (() => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const $ = (sel, root = document) => root.querySelector(sel);
 
   // Spotify's "Full screen" view (large cover art) uses the Fullscreen API,
   // which would make the whole window cover the screen. Fake it so the view is
-  // shown inside the window and mediactl keeps control of window geometry.
+  // shown inside the window and tvctl keeps control of window geometry.
   let fakeFullscreen = null;
   const fireChange = (el) => {
     document.dispatchEvent(new Event("fullscreenchange"));
@@ -135,7 +135,7 @@ window.__mediactl = (() => {
   // `highlight=...&autoplay_ok=1`); other pages are started with their play button.
   async function open(a) {
     if (!(await waitFor(() => playPause() && pagePlayButton(), 20000))) {
-      throw new Error("Spotify player did not load (are you logged in? `mediactl auth login spotify`)");
+      throw new Error("Spotify player did not load (are you logged in? `tvctl auth login spotify`)");
     }
     const kind = new URL(a.url).pathname.split("/").filter(Boolean).find((p) => !p.startsWith("intl-"));
     const autoplays = kind === "track" || location.search.includes("autoplay_ok");

@@ -27,7 +27,7 @@ pub struct Cdp {
 }
 
 /// Event delivered to subscribers when the connection closes.
-pub const CLOSED_EVENT: &str = "mediactl.connectionClosed";
+pub const CLOSED_EVENT: &str = "tvctl.connectionClosed";
 
 impl Cdp {
     pub fn connect(ws_url: &str) -> Result<Cdp> {

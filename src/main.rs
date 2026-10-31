@@ -21,12 +21,12 @@ const LONG_ABOUT: &str = "\
 Play videos and music (YouTube, Spotify, ...) in windows and control them from the command line.
 
 Workflow:
-  1. `mediactl open <URL>` opens a player window and prints its `id`.
-  2. Control it with `mediactl <command> <ID> ...`; `mediactl list` shows open players.
-  3. `mediactl close <ID>`. A background server starts on demand and stops a few
+  1. `tvctl open <URL>` opens a player window and prints its `id`.
+  2. Control it with `tvctl <command> <ID> ...`; `tvctl list` shows open players.
+  3. `tvctl close <ID>`. A background server starts on demand and stops a few
      seconds after the last player closes; no setup is needed.
 
-Each service is a plugin. `mediactl plugins` shows, per plugin, the URL domains it
+Each service is a plugin. `tvctl plugins` shows, per plugin, the URL domains it
 handles, its `actions` (supported player commands) and `unsupported_actions` per
 backend. Unsupported commands fail with an error that lists the supported ones.";
 
@@ -49,15 +49,15 @@ Errors:
   code is 1 (no JSON on stdout).
 
 Examples:
-  mediactl open 'https://www.youtube.com/watch?v=iG9CE55wbtY' --subtitles ja
-  mediactl open 'https://youtu.be/jNQXAC9IVRw' --layout bottom-right --size 480x270 --on-top
-  mediactl open 'https://open.spotify.com/album/5Z9iiGl2FcIfa3BMiv6OIw'
-  mediactl status 1                  # read state, time, title, window
-  mediactl seek 1 +30                # relative; `seek 1 1:30` is absolute
-  mediactl subtitles 1 ja            # Japanese subtitles (auto-translated if needed)
-  mediactl window 1 --layout left    # snap to the left half of the screen
-  mediactl screenshot 1 /tmp/now.png # see what the window shows
-  mediactl auth login youtube        # one-time login (needed for Spotify)";
+  tvctl open 'https://www.youtube.com/watch?v=iG9CE55wbtY' --subtitles ja
+  tvctl open 'https://youtu.be/jNQXAC9IVRw' --layout bottom-right --size 480x270 --on-top
+  tvctl open 'https://open.spotify.com/album/5Z9iiGl2FcIfa3BMiv6OIw'
+  tvctl status 1                  # read state, time, title, window
+  tvctl seek 1 +30                # relative; `seek 1 1:30` is absolute
+  tvctl subtitles 1 ja            # Japanese subtitles (auto-translated if needed)
+  tvctl window 1 --layout left    # snap to the left half of the screen
+  tvctl screenshot 1 /tmp/now.png # see what the window shows
+  tvctl auth login youtube        # one-time login (needed for Spotify)";
 
 const ID: &str = "Player id, from the output of `open` or `list`";
 
@@ -72,14 +72,14 @@ struct Cli {
 enum Cmd {
     /// Open a URL in a new player window; prints the new player's id and status.
     ///
-    /// The plugin is chosen by the URL's domain (see `mediactl plugins`). Starts
+    /// The plugin is chosen by the URL's domain (see `tvctl plugins`). Starts
     /// the background server if it is not running.
     Open {
         /// Video or music URL of a supported service, e.g. a YouTube watch/youtu.be/shorts
         /// URL or an open.spotify.com track/album/playlist URL.
         url: String,
         /// Use this backend instead of choosing automatically. `webview`: native
-        /// window, no login. `chrome`: mediactl's Chrome profile (logins, DRM).
+        /// window, no login. `chrome`: tvctl's Chrome profile (logins, DRM).
         #[arg(long, value_enum)]
         backend: Option<plugin::BackendKind>,
         /// Start position: seconds (90), clock (1:30, 1:02:03) or units (1m30s).
@@ -240,7 +240,7 @@ enum Cmd {
         #[arg(help = ID)]
         id: String,
     },
-    /// Log in to a service in mediactl's Chrome profile.
+    /// Log in to a service in tvctl's Chrome profile.
     Auth {
         #[command(subcommand)]
         action: AuthCmd,
@@ -269,7 +269,7 @@ enum ServerCmd {
     /// restarting Chrome between uses).
     ///
     /// Without this, `open` and `auth` start it on demand and it stops a few
-    /// seconds after the last player closes (`MEDIACTL_IDLE_SECS`).
+    /// seconds after the last player closes (`TVCTL_IDLE_SECS`).
     Up,
     /// Stop the server and close all players.
     Down,
@@ -279,7 +279,7 @@ enum ServerCmd {
 
 #[derive(Subcommand)]
 enum AuthCmd {
-    /// Open the service's login page in mediactl's Chrome profile and wait.
+    /// Open the service's login page in tvctl's Chrome profile and wait.
     ///
     /// Sign in, then quit that Chrome (Cmd+Q). Prints `{"service", "logged_in"}`.
     /// Needs a person at the screen. Logged in, YouTube plays in Chrome (no ads with
@@ -519,7 +519,7 @@ mod tests {
 
     /// Parses a command line and returns the request JSON sent to the server.
     fn req(args: &[&str]) -> Value {
-        let mut argv = vec!["mediactl"];
+        let mut argv = vec!["tvctl"];
         argv.extend_from_slice(args);
         let cli = Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("{args:?}: {e}"));
         match plan(cli.command).unwrap_or_else(|e| panic!("{args:?}: {e}")) {
@@ -529,7 +529,7 @@ mod tests {
     }
 
     fn rejects(args: &[&str]) {
-        let mut argv = vec!["mediactl"];
+        let mut argv = vec!["tvctl"];
         argv.extend_from_slice(args);
         let ok = Cli::try_parse_from(argv)
             .map(|c| plan(c.command).is_ok())
@@ -551,7 +551,7 @@ mod tests {
             (vec!["__serve"], "Serve(false)"),
             (vec!["__serve", "--persistent"], "Serve(true)"),
         ] {
-            let mut argv = vec!["mediactl"];
+            let mut argv = vec!["tvctl"];
             argv.extend(args.iter());
             let p = plan(Cli::try_parse_from(argv).unwrap().command).unwrap();
             assert_eq!(format!("{p:?}"), expect);
@@ -803,14 +803,14 @@ mod tests {
         }
         let cli = Cli::command();
         cli.clone().debug_assert();
-        check(&cli, "mediactl");
+        check(&cli, "tvctl");
         let long = cli.clone().render_long_help().to_string();
         for needle in [
             "Workflow:",
             "Output:",
             "Errors:",
             "Examples:",
-            "mediactl plugins",
+            "tvctl plugins",
             "exit",
         ] {
             assert!(long.contains(needle), "long help lacks {needle:?}");

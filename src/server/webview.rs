@@ -2,7 +2,7 @@
 //!
 //! Each player is a window whose WebView loads the plugin's `webview.html` from a
 //! loopback HTTP server (so embeds get a real origin) and runs the plugin's
-//! `window.__mediactl.run(action)` through a small host bridge.
+//! `window.__tvctl.run(action)` through a small host bridge.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -28,20 +28,20 @@ use crate::layout::{self, Rect};
 use crate::plugin::{Plugin, Registry};
 use crate::protocol::{Switch, WindowOpts};
 
-/// Main-frame bridge between the host and the plugin's `window.__mediactl`.
+/// Main-frame bridge between the host and the plugin's `window.__tvctl`.
 const HOST_BRIDGE: &str = r#"(() => {
-  if (window.__mediactlHost) return;
+  if (window.__tvctlHost) return;
   const post = (m) => window.ipc.postMessage(JSON.stringify(m));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  window.__mediactlHost = {
+  window.__tvctlHost = {
     run: async (req, action) => {
       try {
         const end = Date.now() + 15000;
-        while (!(window.__mediactl && window.__mediactl.run)) {
-          if (Date.now() > end) throw new Error("plugin page did not define window.__mediactl");
+        while (!(window.__tvctl && window.__tvctl.run)) {
+          if (Date.now() > end) throw new Error("plugin page did not define window.__tvctl");
           await sleep(50);
         }
-        post({ type: "reply", req, ok: true, result: await window.__mediactl.run(action) });
+        post({ type: "reply", req, ok: true, result: await window.__tvctl.run(action) });
       } catch (e) {
         post({ type: "reply", req, ok: false, error: String((e && e.message) || e) });
       }
@@ -343,7 +343,7 @@ impl State {
     ) -> Result<()> {
         let (w, h) = opts.size.unwrap_or((960.0, 540.0));
         let window = WindowBuilder::new()
-            .with_title(format!("mediactl [{id}] {}", plugin.name()))
+            .with_title(format!("tvctl [{id}] {}", plugin.name()))
             .with_inner_size(LogicalSize::new(w, h))
             .with_visible(false)
             .build(target)
@@ -422,7 +422,7 @@ impl State {
                 reply,
             },
         );
-        let script = format!("window.__mediactlHost.run({req}, {action})");
+        let script = format!("window.__tvctlHost.run({req}, {action})");
         let player = self.players.get_mut(id).expect("checked by caller");
         if player.page_ready {
             run_script(player, &script);

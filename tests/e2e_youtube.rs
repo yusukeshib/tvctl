@@ -5,8 +5,8 @@
 //!
 //! By default the Chrome backend runs logged out in a fresh profile, so ads may
 //! play and the tests wait for them. To use a logged-in profile (no ads with
-//! Premium), point MEDIACTL_E2E_PROFILE at a mediactl data dir, e.g.
-//! `MEDIACTL_E2E_PROFILE="$HOME/Library/Application Support/mediactl"`.
+//! Premium), point TVCTL_E2E_PROFILE at a tvctl data dir, e.g.
+//! `TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl"`.
 
 mod common;
 
@@ -153,10 +153,10 @@ fn youtube_chrome_audio_tracks_and_fill() {
     assert_eq!(p(&env.ok(&["status", &id]), "fills_window"), true);
     let st = env.ok(&["status", &id]);
     assert_eq!(st["window"]["fullscreen"], false);
-    // Matches the profile in use (logged out unless MEDIACTL_E2E_PROFILE is set).
+    // Matches the profile in use (logged out unless TVCTL_E2E_PROFILE is set).
     assert_eq!(
         p(&st, "logged_in"),
-        std::env::var_os("MEDIACTL_E2E_PROFILE").is_some()
+        std::env::var_os("TVCTL_E2E_PROFILE").is_some()
     );
 }
 

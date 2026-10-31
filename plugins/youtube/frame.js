@@ -5,7 +5,7 @@
   if (!/(^|\.)youtube(-nocookie)?\.com$/.test(location.hostname) || !location.pathname.startsWith("/embed/")) return;
   window.addEventListener("message", (e) => {
     const d = e.data;
-    if (!d || typeof d !== "object" || !d.__mediactl) return;
+    if (!d || typeof d !== "object" || !d.__tvctl) return;
     let result = null;
     let error = null;
     try {
@@ -28,6 +28,6 @@
     } catch (err) {
       error = String((err && err.message) || err);
     }
-    e.source.postMessage({ __mediactlReply: d.id, result, error }, "*");
+    e.source.postMessage({ __tvctlReply: d.id, result, error }, "*");
   });
 })();

@@ -1,7 +1,7 @@
 // YouTube adapter for the Chrome backend. Runs on www.youtube.com/watch pages and
 // drives the page's own player element (#movie_player), which exposes the full
 // internal player API.
-window.__mediactl = (() => {
+window.__tvctl = (() => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const STATES = { "-1": "unstarted", 0: "ended", 1: "playing", 2: "paused", 3: "buffering", 5: "cued" };
   const mp = () => document.getElementById("movie_player");
@@ -44,7 +44,7 @@ window.__mediactl = (() => {
   function fillWindow() {
     if (!observer) {
       observer = new MutationObserver(() => {
-        if (!document.getElementById("__mediactl_css")) addStyle();
+        if (!document.getElementById("__tvctl_css")) addStyle();
       });
       observer.observe(document.documentElement, { childList: true, subtree: false });
     }
@@ -53,9 +53,9 @@ window.__mediactl = (() => {
   }
 
   function addStyle() {
-    if (!document.getElementById("__mediactl_css")) {
+    if (!document.getElementById("__tvctl_css")) {
       const s = document.createElement("style");
-      s.id = "__mediactl_css";
+      s.id = "__tvctl_css";
       s.textContent = `
         html, body { overflow: hidden !important; background: #000 !important; }
         body * { visibility: hidden !important; }
@@ -78,7 +78,7 @@ window.__mediactl = (() => {
   // True when the player covers the viewport and the rest of the page is hidden.
   function fillsWindow() {
     const p = mp();
-    if (!p || !document.getElementById("__mediactl_css")) return false;
+    if (!p || !document.getElementById("__tvctl_css")) return false;
     const r = p.getBoundingClientRect();
     const covers = r.left <= 0 && r.top <= 0 && r.right >= innerWidth && r.bottom >= innerHeight;
     const masthead = document.querySelector("#masthead-container, ytd-masthead");

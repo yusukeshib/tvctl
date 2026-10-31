@@ -12,11 +12,11 @@ use serde_json::{Value, json};
 
 use crate::protocol::{Request, Response};
 
-/// Socket path; override with `MEDIACTL_SOCKET`.
+/// Socket path; override with `TVCTL_SOCKET`.
 pub fn socket_path() -> PathBuf {
-    std::env::var_os("MEDIACTL_SOCKET")
+    std::env::var_os("TVCTL_SOCKET")
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("mediactl.sock"))
+        .unwrap_or_else(|| std::env::temp_dir().join("tvctl.sock"))
 }
 
 /// Server log path (next to the socket).
@@ -38,9 +38,8 @@ pub fn send(req: &Request) -> Result<Value> {
 }
 
 fn send_to(socket: &Path, req: &Request) -> Result<Value> {
-    let stream = UnixStream::connect(socket).map_err(|_| {
-        anyhow!("mediactl server is not running (start it with `mediactl server up`)")
-    })?;
+    let stream = UnixStream::connect(socket)
+        .map_err(|_| anyhow!("tvctl server is not running (start it with `tvctl server up`)"))?;
     let mut writer = stream.try_clone()?;
     serde_json::to_writer(&mut writer, req)?;
     writer.write_all(b"\n")?;
@@ -226,7 +225,7 @@ mod tests {
 
     #[test]
     fn no_server() {
-        let e = send_to(Path::new("/nonexistent/mediactl.sock"), &Request::Ping).unwrap_err();
+        let e = send_to(Path::new("/nonexistent/tvctl.sock"), &Request::Ping).unwrap_err();
         assert!(e.to_string().contains("server up"), "{e}");
     }
 }

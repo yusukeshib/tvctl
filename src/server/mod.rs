@@ -89,9 +89,9 @@ struct Router {
     idle_timeout: Duration,
 }
 
-/// Idle grace period: `$MEDIACTL_IDLE_SECS` or 5 seconds.
+/// Idle grace period: `$TVCTL_IDLE_SECS` or 5 seconds.
 fn idle_timeout() -> Duration {
-    let secs = std::env::var("MEDIACTL_IDLE_SECS")
+    let secs = std::env::var("TVCTL_IDLE_SECS")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(5.0);
@@ -346,7 +346,7 @@ pub fn run(persistent: bool) -> Result<()> {
         }
     });
     eprintln!(
-        "mediactl server listening on {} (pid {})",
+        "tvctl server listening on {} (pid {})",
         socket.display(),
         std::process::id()
     );

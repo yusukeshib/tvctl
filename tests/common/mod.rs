@@ -1,4 +1,4 @@
-//! Harness for end-to-end tests: runs the real `mediactl` binary against an
+//! Harness for end-to-end tests: runs the real `tvctl` binary against an
 //! isolated server (own socket, data dir, Chrome profile and plugin dir) and a
 //! local HTTP site for the fake plugin.
 #![allow(dead_code)]
@@ -67,11 +67,11 @@ login_mode = "controlled"
         Env { dir, site, data }
     }
 
-    /// Like `new`, but uses the data dir in `MEDIACTL_E2E_PROFILE` when set, so
+    /// Like `new`, but uses the data dir in `TVCTL_E2E_PROFILE` when set, so
     /// tests can run with a logged-in Chrome profile (e.g. YouTube Premium, no ads).
     pub fn with_profile() -> Env {
         let mut env = Env::new();
-        if let Some(dir) = std::env::var_os("MEDIACTL_E2E_PROFILE") {
+        if let Some(dir) = std::env::var_os("TVCTL_E2E_PROFILE") {
             env.data = PathBuf::from(dir);
         }
         env
@@ -81,15 +81,15 @@ login_mode = "controlled"
         self.dir.path().join(rel)
     }
 
-    /// Runs `mediactl args...`; Ok(stdout JSON) or Err(stderr).
+    /// Runs `tvctl args...`; Ok(stdout JSON) or Err(stderr).
     pub fn run(&self, args: &[&str]) -> Result<Value, String> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_mediactl"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_tvctl"))
             .args(args)
-            .env("MEDIACTL_SOCKET", self.path("s.sock"))
-            .env("MEDIACTL_DATA_DIR", &self.data)
-            .env("MEDIACTL_PLUGIN_DIR", self.path("plugins"))
+            .env("TVCTL_SOCKET", self.path("s.sock"))
+            .env("TVCTL_DATA_DIR", &self.data)
+            .env("TVCTL_PLUGIN_DIR", self.path("plugins"))
             // Short idle shutdown so the auto-stop tests are fast.
-            .env("MEDIACTL_IDLE_SECS", "1")
+            .env("TVCTL_IDLE_SECS", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -98,7 +98,7 @@ login_mode = "controlled"
         while child.try_wait().unwrap().is_none() {
             if Instant::now() > deadline {
                 let _ = child.kill();
-                panic!("mediactl {args:?} timed out");
+                panic!("tvctl {args:?} timed out");
             }
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -106,7 +106,7 @@ login_mode = "controlled"
         if out.status.success() {
             let s = String::from_utf8_lossy(&out.stdout);
             Ok(serde_json::from_str(&s)
-                .unwrap_or_else(|e| panic!("mediactl {args:?}: bad JSON {e}: {s}")))
+                .unwrap_or_else(|e| panic!("tvctl {args:?}: bad JSON {e}: {s}")))
         } else {
             Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
         }
@@ -115,13 +115,13 @@ login_mode = "controlled"
     /// Runs a command that must succeed.
     pub fn ok(&self, args: &[&str]) -> Value {
         self.run(args)
-            .unwrap_or_else(|e| panic!("mediactl {args:?} failed: {e}"))
+            .unwrap_or_else(|e| panic!("tvctl {args:?} failed: {e}"))
     }
 
     /// Runs a command that must fail; returns the error text.
     pub fn err(&self, args: &[&str]) -> String {
         match self.run(args) {
-            Ok(v) => panic!("mediactl {args:?} should fail but returned {v}"),
+            Ok(v) => panic!("tvctl {args:?} should fail but returned {v}"),
             Err(e) => e,
         }
     }

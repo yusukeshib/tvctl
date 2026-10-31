@@ -7,9 +7,9 @@
 //! * `frame.js` — optional; injected into the subframes of that WebView.
 //! * `chrome.js` — adapter evaluated in Chrome pages (Chrome backend).
 //!
-//! Every adapter defines `window.__mediactl.run(action)` returning a status object.
+//! Every adapter defines `window.__tvctl.run(action)` returning a status object.
 //! Built-in plugins are embedded in the binary; external plugins are read from
-//! `$MEDIACTL_PLUGIN_DIR` or `${XDG_CONFIG_HOME:-~/.config/mediactl/plugins` and override
+//! `$TVCTL_PLUGIN_DIR` or `${XDG_CONFIG_HOME:-~/.config/tvctl/plugins` and override
 //! built-ins with the same name.
 
 use std::collections::BTreeMap;
@@ -260,13 +260,13 @@ fn parse_url(input: &str) -> Result<Url> {
 }
 
 pub fn external_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("MEDIACTL_PLUGIN_DIR") {
+    if let Some(dir) = std::env::var_os("TVCTL_PLUGIN_DIR") {
         return Some(PathBuf::from(dir));
     }
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(config.join("mediactl").join("plugins"))
+    Some(config.join("tvctl").join("plugins"))
 }
 
 fn load_dir(dir: &Path) -> Result<Plugin> {
@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn missing_external_dir_is_fine() {
-        let r = Registry::load_with(Some(PathBuf::from("/nonexistent/mediactl-plugins"))).unwrap();
+        let r = Registry::load_with(Some(PathBuf::from("/nonexistent/tvctl-plugins"))).unwrap();
         assert!(r.get("youtube").is_some());
     }
 

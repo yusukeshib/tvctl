@@ -1,8 +1,8 @@
 //! End-to-end tests against the real Spotify Web Player. Spotify needs a logged-in
-//! account, so these run only with a mediactl data dir whose Chrome profile is
-//! signed in (`mediactl auth login spotify`):
+//! account, so these run only with a tvctl data dir whose Chrome profile is
+//! signed in (`tvctl auth login spotify`):
 //!
-//!     MEDIACTL_E2E_PROFILE="$HOME/Library/Application Support/mediactl" \
+//!     TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl" \
 //!         cargo test --test e2e_spotify -- --ignored --test-threads=1
 //!
 //! The tests change playback and volume of that account's web player.
@@ -24,8 +24,8 @@ fn p(v: &Value, key: &str) -> Value {
 }
 
 fn env() -> Option<Env> {
-    if std::env::var_os("MEDIACTL_E2E_PROFILE").is_none() {
-        eprintln!("skipped: set MEDIACTL_E2E_PROFILE to a logged-in mediactl data dir");
+    if std::env::var_os("TVCTL_E2E_PROFILE").is_none() {
+        eprintln!("skipped: set TVCTL_E2E_PROFILE to a logged-in tvctl data dir");
         return None;
     }
     let env = Env::with_profile();
