@@ -79,7 +79,8 @@ quit that Chrome with Cmd+Q; mediactl then checks the login cookies.
 
 Spotify links: tracks, albums, playlists, artists and episodes on
 `open.spotify.com`. A track link plays that track; other pages start from the top.
-The Spotify plugin drives the web player's UI (no public API), so Spotify UI
+Spotify opens in its large cover-art view (shown inside the window, so window
+layouts keep working). The plugin drives the web player's UI (no public API), so Spotify UI
 changes can break it; the E2E tests detect that.
 
 ## Plugins

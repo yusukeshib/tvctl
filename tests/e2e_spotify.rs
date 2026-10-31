@@ -44,6 +44,9 @@ fn spotify_album_controls() {
     assert_eq!(v["backend"], "chrome");
     assert_eq!(p(&v, "logged_in"), true);
     assert_eq!(p(&v, "state"), "playing");
+    // The large cover-art view is shown inside the window, not as OS fullscreen.
+    assert_eq!(p(&v, "cover_view"), true);
+    assert_eq!(v["window"]["fullscreen"], false);
     let first = p(&v, "title");
     assert!(first.as_str().is_some_and(|t| !t.is_empty()), "{v}");
 
@@ -87,6 +90,19 @@ fn spotify_album_controls() {
     eventually("previous track", Duration::from_secs(10), || {
         p(&env.ok(&["status", id]), "title") == first
     });
+
+    // the cover view survives track changes and window layout changes
+    assert_eq!(p(&env.ok(&["status", id]), "cover_view"), true);
+    let w = env.ok(&[
+        "window",
+        id,
+        "--layout",
+        "bottom-right",
+        "--size",
+        "640x480",
+    ]);
+    assert_eq!(p(&w, "cover_view"), true);
+    assert_eq!(f(&w["window"]["size"]["width"]), 640.0);
 
     // unsupported actions are reported, not ignored
     for args in [

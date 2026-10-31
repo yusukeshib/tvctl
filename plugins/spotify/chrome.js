@@ -4,6 +4,38 @@ window.__mediactl = (() => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const $ = (sel, root = document) => root.querySelector(sel);
 
+  // Spotify's "Full screen" view (large cover art) uses the Fullscreen API,
+  // which would make the whole window cover the screen. Fake it so the view is
+  // shown inside the window and mediactl keeps control of window geometry.
+  let fakeFullscreen = null;
+  const fireChange = (el) => {
+    document.dispatchEvent(new Event("fullscreenchange"));
+    if (el) el.dispatchEvent(new Event("fullscreenchange", { bubbles: true }));
+  };
+  for (const name of ["fullscreenElement", "webkitFullscreenElement"]) {
+    Object.defineProperty(Document.prototype, name, { configurable: true, get: () => fakeFullscreen });
+  }
+  Element.prototype.requestFullscreen = function () {
+    fakeFullscreen = this;
+    fireChange(this);
+    return Promise.resolve();
+  };
+  Document.prototype.exitFullscreen = function () {
+    const el = fakeFullscreen;
+    fakeFullscreen = null;
+    fireChange(el);
+    return Promise.resolve();
+  };
+
+  const coverViewButton = () => $("[data-testid='fullscreen-mode-button']");
+  async function showCoverView() {
+    if (fakeFullscreen) return;
+    const b = coverViewButton();
+    if (!b) return;
+    b.click();
+    await waitFor(() => fakeFullscreen, 3000);
+  }
+
   async function waitFor(pred, ms) {
     const end = Date.now() + ms;
     while (Date.now() < end) {
@@ -78,6 +110,7 @@ window.__mediactl = (() => {
       volume,
       muted,
       logged_in: !$("[data-testid='login-button']"),
+      cover_view: !!fakeFullscreen,
     };
   }
 
@@ -116,10 +149,12 @@ window.__mediactl = (() => {
     }
     if (!a.paused || autoplays) await waitFor(() => isPlaying() && nowPlaying().title, 10000);
     if (a.start) await seekTo(a.start);
-    if (a.paused && isPlaying()) {
-      click(playPause(), "pause");
+    // Best effort: the button is disabled when playback is on another device.
+    if (a.paused && isPlaying() && !playPause().disabled) {
+      playPause().click();
       await waitFor(() => !isPlaying(), 5000);
     }
+    await showCoverView();
     return status();
   }
 
