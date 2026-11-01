@@ -2,7 +2,7 @@
 name = "tvctl"
 version = "0.2.0"
 edition = "2024"
-description = "Play YouTube, Spotify, Prime Video and more in windows on your screen and control them from the command line (built for AI agents)"
+description = "Play YouTube, Spotify, Netflix, Prime Video and more in windows on your screen and control them from the command line (built for AI agents)"
 license = "MIT"
 authors = ["Yusuke Shibata <yusukeshib@gmail.com>"]
 repository = "https://github.com/yusukeshib/tvctl"

@@ -6,7 +6,7 @@ screen. (It does not control physical TVs.) Every command prints JSON to
 stdout; errors go to stderr with exit code 1.
 
 Services are plugins (`tvctl plugins` lists them). Currently: YouTube,
-Spotify (web player) and Amazon Prime Video (amazon.com, US).
+Spotify (web player), Netflix and Amazon Prime Video (amazon.com, US).
 macOS only for now.
 
 ## Install
@@ -61,6 +61,7 @@ tvctl close 1
 tvctl auth login youtube             # sign in once in tvctl's Chrome profile
 tvctl auth login spotify
 tvctl auth login primevideo
+tvctl auth login netflix
 tvctl auth status
 tvctl plugins                        # services, domains, supported actions
 ```
@@ -100,6 +101,7 @@ quit that Chrome with Cmd+Q; tvctl then checks the login cookies.
 |---|---|---|---|
 | `youtube` | webview (logged out), chrome (logged in) | optional (Premium: no ads) | all; `audio` only in chrome |
 | `spotify` | chrome | required | play, pause, toggle, next, previous, seek, volume, mute |
+| `netflix` | chrome | required | all except previous, quality |
 | `primevideo` | chrome | required (Amazon account with Prime Video, US) | all except previous |
 
 Spotify links: tracks, albums, playlists, artists and episodes on
@@ -107,6 +109,18 @@ Spotify links: tracks, albums, playlists, artists and episodes on
 Spotify opens in its large cover-art view (shown inside the window, so window
 layouts keep working). The plugin drives the web player's UI (no public API), so Spotify UI
 changes can break it; the E2E tests detect that.
+
+Netflix links: `netflix.com/watch/<id>` (and `?t=<seconds>`) and
+`netflix.com/title/<id>` (plays like the page's Play button: a show resumes its
+current episode). Status includes `episode` {title, number, season} and
+`next_episode`; `next` switches to it in place. Subtitles prefer full subtitles
+over closed captions (`type`: `PRIMARY` / `ASSISTIVE`), audio prefers regular
+tracks over audio description; exact track ids from `list` also work. Speeds are
+Netflix's menu rates (0.5 to 1.5). Netflix has no quality setting on the web.
+Ads (plans with ads) are not skipped and are handled like Prime Video's
+(`ad_showing`, refused actions, deferred `--start`/`--subtitles`). The plugin
+uses Netflix's internal player API (seeking through it; setting the video
+element's time directly breaks playback with error M7375).
 
 Prime Video links: `amazon.com/gp/video/detail/<id>`, `amazon.com/dp/<ASIN>` and
 `primevideo.com/detail/<id>` (all opened on amazon.com, where the US account is
@@ -172,6 +186,8 @@ TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl" \
   cargo test --test e2e_spotify -- --ignored --test-threads=1  # real Spotify (needs login)
 TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl" \
   cargo test --test e2e_primevideo -- --ignored --test-threads=1  # real Prime Video (needs login)
+TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl" \
+  cargo test --test e2e_netflix -- --ignored --test-threads=1  # real Netflix (needs login)
 ```
 
 The end-to-end tests open windows. `e2e_fake` uses a fake plugin and a local site.

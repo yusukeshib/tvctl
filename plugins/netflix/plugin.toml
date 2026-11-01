@@ -1,0 +1,11 @@
+name = "netflix"
+description = "Netflix (netflix.com/watch and /title pages)"
+domains = ["netflix.com"]
+# Playback needs a login and DRM, so only the Chrome backend works.
+backends = ["chrome"]
+actions = ["play", "pause", "toggle", "next", "seek", "subtitles", "audio", "volume", "speed"]
+
+[auth]
+login_url = "https://www.netflix.com/login"
+cookie_url = "https://www.netflix.com"
+logged_in_cookies = ["NetflixId", "SecureNetflixId"]

@@ -309,6 +309,12 @@ mod tests {
         ] {
             assert_eq!(r.for_url(u).unwrap().0.name(), "primevideo", "{u}");
         }
+        for u in [
+            "https://www.netflix.com/watch/81716297?trackId=264090261",
+            "netflix.com/title/70264888",
+        ] {
+            assert_eq!(r.for_url(u).unwrap().0.name(), "netflix", "{u}");
+        }
         assert!(r.for_url("https://example.com/").is_err());
         assert!(r.for_url("https://notyoutube.com/").is_err());
         assert!(r.for_url("file:///etc/passwd").is_err());
@@ -515,6 +521,12 @@ mod tests {
                 *a != "previous",
                 "primevideo {a}"
             );
+        }
+        let nf = &r.get("netflix").unwrap().manifest;
+        assert_eq!(nf.backends, [BackendKind::Chrome]);
+        for a in ACTIONS {
+            let want = !matches!(*a, "previous" | "quality");
+            assert_eq!(nf.supports(a, BackendKind::Chrome), want, "netflix {a}");
         }
     }
 
