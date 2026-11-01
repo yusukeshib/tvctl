@@ -87,6 +87,22 @@ struct Router {
     last_request: Mutex<Instant>,
     /// The server stops after this long without players and requests.
     idle_timeout: Duration,
+    /// Started from an SSH session (see `SSH_SESSION_WARNING`).
+    ssh_session: bool,
+}
+
+/// macOS keeps the key that Chrome encrypts cookies with in the login keychain,
+/// which processes of an SSH session cannot use: Chrome started by such a
+/// server neither saves new logins nor loads saved ones.
+const SSH_SESSION_WARNING: &str = "the tvctl server was started from an SSH session, so its Chrome cannot \
+     use the macOS keychain: logins are not saved and saved logins are not loaded. Run \
+     `tvctl server down`, then run tvctl from a terminal on this Mac's own screen (not over SSH)";
+
+/// Whether this process belongs to an SSH session.
+fn in_ssh_session() -> bool {
+    ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+        .iter()
+        .any(|v| std::env::var_os(v).is_some_and(|s| !s.is_empty()))
 }
 
 /// Idle grace period: `$TVCTL_IDLE_SECS` or 5 seconds.
@@ -103,7 +119,29 @@ fn err(e: anyhow::Error) -> String {
 }
 
 impl Router {
+    /// Handles a request; Chrome logins and Chrome players of a server started
+    /// over SSH get a warning (logins there do not persist, so `auth login` is
+    /// refused).
     fn handle(&self, req: Request) -> Result<Value, String> {
+        if !self.ssh_session {
+            return self.handle_inner(req);
+        }
+        let warn = match &req {
+            Request::AuthLogin { .. } => return Err(SSH_SESSION_WARNING.to_string()),
+            Request::AuthStatus { .. } | Request::Ping => true,
+            Request::Open { .. } => false,
+            _ => return self.handle_inner(req),
+        };
+        let mut v = self.handle_inner(req)?;
+        if (warn || v["backend"] == "chrome")
+            && let Some(obj) = v.as_object_mut()
+        {
+            obj.insert("warning".into(), SSH_SESSION_WARNING.into());
+        }
+        Ok(v)
+    }
+
+    fn handle_inner(&self, req: Request) -> Result<Value, String> {
         match req {
             Request::Ping => Ok(self.info()),
             Request::SetPersistent { persistent } => {
@@ -242,6 +280,7 @@ impl Router {
             "players": self.players.count(),
             "persistent": self.persistent.load(Ordering::SeqCst),
             "idle_timeout_secs": self.idle_timeout.as_secs_f64(),
+            "ssh_session": self.ssh_session,
         })
     }
 
@@ -328,6 +367,7 @@ pub fn run(persistent: bool) -> Result<()> {
         busy: AtomicUsize::new(0),
         last_request: Mutex::new(Instant::now()),
         idle_timeout: idle_timeout(),
+        ssh_session: in_ssh_session(),
     });
     let monitor = router.clone();
     std::thread::spawn(move || {

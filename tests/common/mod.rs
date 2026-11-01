@@ -83,8 +83,14 @@ login_mode = "controlled"
 
     /// Runs `tvctl args...`; Ok(stdout JSON) or Err(stderr).
     pub fn run(&self, args: &[&str]) -> Result<Value, String> {
+        self.run_with_env(args, &[])
+    }
+
+    /// Like `run`, with extra environment variables (e.g. `SSH_CONNECTION`).
+    pub fn run_with_env(&self, args: &[&str], vars: &[(&str, &str)]) -> Result<Value, String> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_tvctl"))
             .args(args)
+            .envs(vars.iter().copied())
             .env("TVCTL_SOCKET", self.path("s.sock"))
             .env("TVCTL_DATA_DIR", &self.data)
             .env("TVCTL_PLUGIN_DIR", self.path("plugins"))

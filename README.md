@@ -92,6 +92,13 @@ A plugin lists its backends in order of preference. If a plugin declares
 `prefer_backend_when_logged_in` and you are logged in, that backend is used
 (YouTube: Chrome, so Premium accounts get no ads). `open --backend` overrides.
 
+Run tvctl from a terminal on the Mac's own screen. A server started from an
+SSH session cannot use the macOS keychain, where Chrome keeps the key for its
+saved cookies, so logins would not be saved or loaded: such a server refuses
+`auth login` and adds a `warning` to `auth status`, `server status` and Chrome
+players (`server status` also shows `ssh_session`). Stop it with
+`tvctl server down` and start tvctl again from the Mac's screen.
+
 `auth login` opens the login page in a plain Chrome (not controlled, because
 Google refuses sign-in in automated browsers) on tvctl's profile. Sign in, then
 quit that Chrome with Cmd+Q; tvctl then checks the login cookies.

@@ -69,6 +69,42 @@ fn server_lifecycle() {
     assert!(env.err(&["status", "1"]).contains("not running"));
 }
 
+/// A server started from an SSH session cannot keep Chrome logins (no keychain):
+/// `auth login` is refused, and login state and Chrome players carry a warning.
+#[test]
+#[ignore = "opens windows; run with --ignored"]
+fn ssh_session_warnings() {
+    let env = Env::new();
+    let ssh = [("SSH_CONNECTION", "10.0.0.1 50000 10.0.0.2 22")];
+    let up = env.run_with_env(&["server", "up"], &ssh).unwrap();
+    assert_eq!(up["ssh_session"], true, "{up}");
+    assert!(up["warning"].as_str().unwrap().contains("SSH session"));
+    // Later clients (even from the Mac's own screen) reach that same server.
+    let st = env.ok(&["server", "status"]);
+    assert_eq!(st["ssh_session"], true);
+    let e = env.err(&["auth", "login", "fake"]);
+    assert!(
+        e.contains("started from an SSH session") && e.contains("tvctl server down"),
+        "{e}"
+    );
+    assert!(env.ok(&["auth", "status"])["warning"].is_string());
+    let chrome = open(&env, "chrome", &[]);
+    assert!(
+        chrome["warning"].as_str().unwrap().contains("keychain"),
+        "{chrome}"
+    );
+    let webview = open(&env, "webview", &[]);
+    assert!(webview["warning"].is_null(), "{webview}");
+    env.ok(&["server", "down"]);
+    // Started without SSH, there is no warning.
+    let up = env.ok(&["server", "up"]);
+    if std::env::var_os("SSH_CONNECTION").is_none() {
+        assert_eq!(up["ssh_session"], false);
+        assert!(up["warning"].is_null());
+        assert!(open(&env, "chrome", &[])["warning"].is_null());
+    }
+}
+
 fn running(env: &Env) -> bool {
     env.ok(&["server", "status"])["running"] == true
 }

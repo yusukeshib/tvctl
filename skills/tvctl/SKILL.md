@@ -109,5 +109,11 @@ Cmd+Q. Ask the user to do this; never handle their credentials.
 
 - `error: ... server is not running` for a player command: the player was closed;
   open it again.
+- A `warning` about an SSH session (or `auth login` refused for that reason):
+  the tvctl server was started over SSH, where Chrome cannot use the macOS
+  keychain, so logins are not saved or loaded. Run `tvctl server down` and ask
+  the user to run tvctl from a terminal on the Mac's own screen.
+- Protected (DRM) video can look black or white in screenshots and through
+  screen sharing while it plays normally on the Mac's own display.
 - Unexpected behavior: run `cargo install tvctl` to update, then retry.
 - Server log: `$TMPDIR/tvctl.log`.
