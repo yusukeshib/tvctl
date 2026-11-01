@@ -5,8 +5,8 @@ computer and control them from the command line, like a TV remote for your
 screen. (It does not control physical TVs.) Every command prints JSON to
 stdout; errors go to stderr with exit code 1.
 
-Services are plugins (`tvctl plugins` lists them). Currently: YouTube and
-Spotify (web player).
+Services are plugins (`tvctl plugins` lists them). Currently: YouTube,
+Spotify (web player) and Amazon Prime Video (amazon.com, US).
 macOS only for now.
 
 ## Install
@@ -60,6 +60,7 @@ tvctl close 1
 
 tvctl auth login youtube             # sign in once in tvctl's Chrome profile
 tvctl auth login spotify
+tvctl auth login primevideo
 tvctl auth status
 tvctl plugins                        # services, domains, supported actions
 ```
@@ -99,12 +100,27 @@ quit that Chrome with Cmd+Q; tvctl then checks the login cookies.
 |---|---|---|---|
 | `youtube` | webview (logged out), chrome (logged in) | optional (Premium: no ads) | all; `audio` only in chrome |
 | `spotify` | chrome | required | play, pause, toggle, next, previous, seek, volume, mute |
+| `primevideo` | chrome | required (Amazon account with Prime Video, US) | all except previous |
 
 Spotify links: tracks, albums, playlists, artists and episodes on
 `open.spotify.com`. A track link plays that track; other pages start from the top.
 Spotify opens in its large cover-art view (shown inside the window, so window
 layouts keep working). The plugin drives the web player's UI (no public API), so Spotify UI
 changes can break it; the E2E tests detect that.
+
+Prime Video links: `amazon.com/gp/video/detail/<id>`, `amazon.com/dp/<ASIN>` and
+`primevideo.com/detail/<id>` (all opened on amazon.com, where the US account is
+signed in). A series page plays the episode its Play button would (usually the
+next one to watch); a title resumes where it was left unless `--start` is given.
+`next` starts the next episode (`next_episode` in status). Speeds are the
+player's fixed rates (0.75 to 2); qualities are its data-usage settings `good`,
+`better`, `best`. Ads are not skipped: while one plays, `ad_showing` is true,
+`ad_remaining` gives the seconds left, seeking/subtitles/audio/speed are
+refused, and `--start`/`--subtitles` of `open` are applied when it ends
+(`pending`). Amazon limits simultaneous streams per account; a window that
+cannot play reports the player's message (e.g. "Maximum Streams Playing") as an
+error. The plugin uses the web player's internal stores (no public API), so
+Prime Video changes can break it; the E2E tests detect that.
 
 ## Plugins
 
@@ -154,6 +170,8 @@ cargo test --test e2e_fake -- --ignored --test-threads=1     # all commands, bot
 cargo test --test e2e_youtube -- --ignored --test-threads=1  # real YouTube (network)
 TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl" \
   cargo test --test e2e_spotify -- --ignored --test-threads=1  # real Spotify (needs login)
+TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl" \
+  cargo test --test e2e_primevideo -- --ignored --test-threads=1  # real Prime Video (needs login)
 ```
 
 The end-to-end tests open windows. `e2e_fake` uses a fake plugin and a local site.

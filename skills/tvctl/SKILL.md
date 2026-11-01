@@ -1,6 +1,6 @@
 ---
 name: tvctl
-description: Play and control YouTube videos and Spotify music in windows on the user's Mac with the tvctl CLI (open a URL, play/pause, seek, skip, subtitles incl. Japanese, audio track, volume, speed, quality, window size/position/layout/fullscreen, screenshots). Use when the user asks to play, watch, listen to, or control a video or song on their screen.
+description: Play and control YouTube videos, Spotify music and Amazon Prime Video titles in windows on the user's Mac with the tvctl CLI (open a URL, play/pause, seek, skip, subtitles incl. Japanese, audio track, volume, speed, quality, window size/position/layout/fullscreen, screenshots). Use when the user asks to play, watch, listen to, or control a video or song on their screen.
 ---
 
 # tvctl
@@ -24,7 +24,7 @@ cargo install tvctl
 - Needs Rust (`cargo`). If `cargo` is missing, ask the user before installing
   Rust (https://rustup.rs).
 - Check the installed version with `tvctl --version`.
-- Requirements: macOS. Google Chrome for logged-in playback and Spotify.
+- Requirements: macOS. Google Chrome for logged-in playback, Spotify and Prime Video.
 
 ## 2. Basic use
 
@@ -38,8 +38,9 @@ Use the `id` from `open` (or `tvctl list`) in later commands. No setup is needed
 a background server starts on demand and stops a few seconds after the last
 player closes.
 
-Supported URLs: YouTube (watch, youtu.be, shorts, live) and Spotify
-(open.spotify.com tracks, albums, playlists). `tvctl plugins` lists services and
+Supported URLs: YouTube (watch, youtu.be, shorts, live), Spotify
+(open.spotify.com tracks, albums, playlists) and Prime Video (US amazon.com
+`/gp/video/detail/<id>`, `/dp/<ASIN>`, or primevideo.com `/detail/<id>`). `tvctl plugins` lists services and
 the actions each supports; unsupported actions fail with an error listing the
 supported ones.
 
@@ -74,17 +75,22 @@ that screen region.
 - Japanese subtitles: if a video has no Japanese track, tvctl uses YouTube's
   auto-translation (`translated_to: "ja"` in the output). If `subtitles list`
   shows no tracks, the video has no subtitles.
+- Prime Video: ads are not skipped. While `ad_showing` is true, seeking,
+  subtitles, audio and speed fail; wait `ad_remaining` seconds and retry.
+  Quality values are `good`, `better`, `best`; `next` plays the next episode.
+  Amazon limits simultaneous streams, so close Prime Video players you no longer
+  need.
 - To verify what is on screen, take a screenshot rather than assuming.
 - If the user closes the window, the player id becomes invalid (`no player`).
 
 ## 5. Logins (needs the user)
 
-YouTube works without a login (ads may play). Spotify requires a login, and a
-YouTube Premium login removes ads:
+YouTube works without a login (ads may play). Spotify and Prime Video require
+a login, and a YouTube Premium login removes ads:
 
 ```sh
 tvctl auth status
-tvctl auth login youtube    # or spotify
+tvctl auth login youtube    # or spotify, primevideo
 ```
 
 `auth login` opens Chrome; the user must sign in and then quit that Chrome with

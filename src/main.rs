@@ -15,10 +15,10 @@ use crate::layout::Layout;
 use crate::protocol::{PlayerAction, Request, Switch, WindowOpts};
 use crate::timeparse::Seek;
 
-const ABOUT: &str = "Play videos and music (YouTube, Spotify, ...) in windows and control them from the command line.";
+const ABOUT: &str = "Play videos and music (YouTube, Spotify, Prime Video, ...) in windows and control them from the command line.";
 
 const LONG_ABOUT: &str = "\
-Play videos and music (YouTube, Spotify, ...) in windows and control them from the command line.
+Play videos and music (YouTube, Spotify, Prime Video, ...) in windows and control them from the command line.
 
 Workflow:
   1. `tvctl open <URL>` opens a player window and prints its `id`.
@@ -52,12 +52,13 @@ Examples:
   tvctl open 'https://www.youtube.com/watch?v=iG9CE55wbtY' --subtitles ja
   tvctl open 'https://youtu.be/jNQXAC9IVRw' --layout bottom-right --size 480x270 --on-top
   tvctl open 'https://open.spotify.com/album/5Z9iiGl2FcIfa3BMiv6OIw'
+  tvctl open 'https://www.amazon.com/gp/video/detail/B0GHXVBQLM' --subtitles ja
   tvctl status 1                  # read state, time, title, window
   tvctl seek 1 +30                # relative; `seek 1 1:30` is absolute
   tvctl subtitles 1 ja            # Japanese subtitles (auto-translated if needed)
   tvctl window 1 --layout left    # snap to the left half of the screen
   tvctl screenshot 1 /tmp/now.png # see what the window shows
-  tvctl auth login youtube        # one-time login (needed for Spotify)";
+  tvctl auth login youtube        # one-time login (needed for Spotify, Prime Video)";
 
 const ID: &str = "Player id, from the output of `open` or `list`";
 
@@ -76,7 +77,8 @@ enum Cmd {
     /// the background server if it is not running.
     Open {
         /// Video or music URL of a supported service, e.g. a YouTube watch/youtu.be/shorts
-        /// URL or an open.spotify.com track/album/playlist URL.
+        /// URL, an open.spotify.com track/album/playlist URL or an amazon.com
+        /// /gp/video/detail (Prime Video) URL.
         url: String,
         /// Use this backend instead of choosing automatically. `webview`: native
         /// window, no login. `chrome`: tvctl's Chrome profile (logins, DRM).
@@ -283,9 +285,9 @@ enum AuthCmd {
     ///
     /// Sign in, then quit that Chrome (Cmd+Q). Prints `{"service", "logged_in"}`.
     /// Needs a person at the screen. Logged in, YouTube plays in Chrome (no ads with
-    /// Premium); Spotify requires a login.
+    /// Premium); Spotify and Prime Video require a login.
     Login {
-        /// Plugin name, e.g. youtube, spotify.
+        /// Plugin name, e.g. youtube, spotify, primevideo.
         service: String,
     },
     /// Show login state for one service or all services that support login.

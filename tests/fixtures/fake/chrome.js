@@ -56,6 +56,7 @@ if (!window.__tvctl) window.__tvctl = (() => {
           target.searchParams.set("landed", "1");
           return { navigate: target.toString() };
         }
+        if (target.searchParams.has("fail")) throw new Error("fake open failure");
         s.opened = { url: a.url, start: a.start, paused: a.paused, subtitles: a.subtitles };
         s.state = a.paused ? "paused" : "playing";
         s.current_time = a.start || 0;

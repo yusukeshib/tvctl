@@ -302,6 +302,13 @@ mod tests {
         ] {
             assert_eq!(r.for_url(u).unwrap().0.name(), "youtube", "{u}");
         }
+        for u in [
+            "https://www.amazon.com/gp/video/detail/B0GHXVBQLM",
+            "amazon.com/dp/B0GHXVBQLM",
+            "https://www.primevideo.com/detail/0HO80FV4Z40LP5NE2D9K7AQ0KD",
+        ] {
+            assert_eq!(r.for_url(u).unwrap().0.name(), "primevideo", "{u}");
+        }
         assert!(r.for_url("https://example.com/").is_err());
         assert!(r.for_url("https://notyoutube.com/").is_err());
         assert!(r.for_url("file:///etc/passwd").is_err());
@@ -499,6 +506,15 @@ mod tests {
         }
         for a in ["subtitles", "audio", "speed", "quality"] {
             assert!(!sp.supports(a, BackendKind::Chrome), "spotify {a}");
+        }
+        let pv = &r.get("primevideo").unwrap().manifest;
+        assert_eq!(pv.backends, [BackendKind::Chrome]);
+        for a in ACTIONS {
+            assert_eq!(
+                pv.supports(a, BackendKind::Chrome),
+                *a != "previous",
+                "primevideo {a}"
+            );
         }
     }
 

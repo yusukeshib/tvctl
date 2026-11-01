@@ -178,6 +178,12 @@ fn open_errors() {
         env.err(&["open", &url, "--start", "later"])
             .contains("invalid time")
     );
+    // A Chrome player whose adapter fails to open closes its window (the caller
+    // gets no id to close it with).
+    let failing = env.url("/v?fail=1");
+    let e = env.err(&["open", &failing, "--backend", "chrome"]);
+    assert!(e.contains("fake open failure"), "{e}");
+    assert_eq!(env.ok(&["list"]), serde_json::json!({ "players": [] }));
     for cmd in [
         vec!["status", "9"],
         vec!["play", "9"],

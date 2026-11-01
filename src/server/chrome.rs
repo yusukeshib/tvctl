@@ -224,7 +224,12 @@ impl Backend {
         opts: &WindowOpts,
     ) -> Result<Value> {
         let result = self.open_inner(id, plugin, action, opts);
-        if result.is_err() && self.player(id).is_err() {
+        if result.is_err() {
+            // The caller gets no id for a failed open, so it could not close the
+            // window (which may keep a stream or session busy); close it here.
+            if self.player(id).is_ok() {
+                let _ = self.close(id);
+            }
             self.players.remove(id);
         }
         result
