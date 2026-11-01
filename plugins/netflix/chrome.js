@@ -112,6 +112,19 @@ window.__tvctl = (() => {
 
   // The error Netflix shows (e.g. too many streams), or null.
   function playerError(s) {
+    // Netflix's full-page error view, e.g. "This title currently isn't available
+    // in your country" (UI3003); shown instead of a player.
+    const page = document.querySelector(".watch-video--error-view .error-page--content, .error-page--content");
+    if (page) {
+      const text = (sel) => ((page.querySelector(sel) || {}).innerText || "").trim().replace(/\s+/g, " ");
+      // The message without the page's buttons and error-code line.
+      const copy = (page.querySelector(".error-page--content--body") || page).cloneNode(true);
+      copy.querySelectorAll(".error-page--content--buttons, .error-page--content--errorCode, a, button")
+        .forEach((e) => e.remove());
+      const body = copy.textContent.trim().replace(/\s+/g, " ").slice(0, 300);
+      const code = text(".error-page--content--errorCode").replace(/^Error Code\s*/i, "");
+      return body + (code ? ` (${code})` : "");
+    }
     let e = null;
     try { e = s && s.player.getError(); } catch (_) {}
     if (!e) {
@@ -174,7 +187,7 @@ window.__tvctl = (() => {
       clearInterval(pendingTimer);
       pendingTimer = null;
       try {
-        if (p.seconds != null) await seekTo(s, p.seconds);
+        if (p.seconds != null) await seekToStart(p.seconds);
         if (p.subtitles) await subtitles(p.subtitles);
       } catch (e) {
         lastError = String(e.message || e);
@@ -186,8 +199,18 @@ window.__tvctl = (() => {
     if (adShowing(s)) throw new Error(`${what} is not available while an ad plays; try again after it`);
   }
 
+  // Netflix's own view of the visitor: "CURRENT_MEMBER", "ANONYMOUS", ...
+  function membership() {
+    try { return window.netflix.reactContext.models.userInfo.data.membershipStatus || null; } catch (_) { return null; }
+  }
+
   async function open(a) {
     const { id, start } = parseUrl(a.url);
+    // Logged out, /watch redirects to a public title page with a trailer.
+    await waitFor(() => membership(), 5000);
+    if (membership() === "ANONYMOUS") {
+      throw new Error("not signed in to Netflix in tvctl's Chrome profile (run `tvctl auth login netflix`)");
+    }
     // A /title/ (show or movie) id plays like the page's Play button; Netflix
     // then redirects /watch/<show id> to the episode, so any watch page is final.
     if (!location.pathname.startsWith("/watch/")) {
@@ -214,7 +237,7 @@ window.__tvctl = (() => {
       if (a.subtitles) later.subtitles = a.subtitles;
       if (Object.keys(later).length) defer(later);
     } else {
-      if (t != null) await seekTo(s, t);
+      if (t != null) await seekToStart(t);
       if (a.subtitles) {
         try { await subtitles(a.subtitles); } catch (e) { warning = "subtitles: " + (e.message || e); }
       }
@@ -225,6 +248,17 @@ window.__tvctl = (() => {
     }
     const st = status();
     return warning ? { ...st, warning } : st;
+  }
+
+  // Netflix may jump to the account's resume point shortly after playback
+  // starts, undoing an early seek; re-apply the requested start until it holds.
+  async function seekToStart(seconds) {
+    for (let i = 0; i < 4; i++) {
+      await seekTo(session(), seconds);
+      await sleep(1500);
+      const now = session().player.getCurrentTime() / 1000;
+      if (Math.abs(now - seconds) < 10) return;
+    }
   }
 
   async function seekTo(s, seconds) {

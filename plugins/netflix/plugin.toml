@@ -8,4 +8,5 @@ actions = ["play", "pause", "toggle", "next", "seek", "subtitles", "audio", "vol
 [auth]
 login_url = "https://www.netflix.com/login"
 cookie_url = "https://www.netflix.com"
-logged_in_cookies = ["NetflixId", "SecureNetflixId"]
+# NetflixId/SecureNetflixId are set for anonymous visitors too; these are not.
+logged_in_cookies = ["nap", "profilesNewSession"]

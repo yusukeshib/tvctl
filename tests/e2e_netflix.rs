@@ -69,7 +69,10 @@ fn netflix_controls() {
     let s = env.ok(&["status", id]);
     assert!((300.0..340.0).contains(&f(&p(&s, "current_time"))), "{s}");
     assert_eq!(p(&s, "subtitles")["language"], "ja", "{s}");
-    assert_eq!(p(&s, "state"), "playing");
+    // Right after the --start seek the player may still be buffering.
+    eventually("playback after the seek", Duration::from_secs(15), || {
+        p(&env.ok(&["status", id]), "state") == "playing"
+    });
 
     // play / pause / toggle
     assert_eq!(p(&env.ok(&["pause", id]), "state"), "paused");
@@ -146,6 +149,27 @@ fn netflix_controls() {
     env.ok(&["close", id]);
 }
 
+/// Logged out (a fresh profile; no login needed), Netflix shows a public title
+/// page: `open` must say so, and `auth status` must not report a login.
+#[test]
+#[ignore = "needs network and windows; run with --ignored"]
+fn netflix_logged_out() {
+    let env = Env::new();
+    env.up();
+    assert_eq!(
+        env.ok(&["auth", "status", "netflix"])["services"][0]["logged_in"],
+        false
+    );
+    let e = env.err(&["open", SHOW]);
+    assert!(e.contains("not signed in to Netflix"), "{e}");
+    assert_eq!(env.ok(&["list"]), serde_json::json!({ "players": [] }));
+    // Visiting Netflix logged out must not make it look logged in.
+    assert_eq!(
+        env.ok(&["auth", "status", "netflix"])["services"][0]["logged_in"],
+        false
+    );
+}
+
 #[test]
 #[ignore = "needs a Netflix login, network and windows; run with --ignored"]
 fn netflix_urls() {
@@ -154,6 +178,20 @@ fn netflix_urls() {
     let e = env.err(&["open", "https://www.netflix.com/browse"]);
     assert!(e.contains("not a Netflix title URL"), "{e}");
     assert_eq!(env.ok(&["list"]), serde_json::json!({ "players": [] }));
+    // A title that is not available (here: no such id) reports Netflix's error
+    // page instead of waiting for a player.
+    let e = env.err(&["open", "https://www.netflix.com/watch/12345678"]);
+    assert!(
+        e.contains("isn't available") && e.contains("(UI3003)"),
+        "{e}"
+    );
+    assert!(!e.contains("Learn More"), "{e}");
+    assert_eq!(env.ok(&["list"]), serde_json::json!({ "players": [] }));
+    // The login state is Netflix's, not just any netflix.com cookie.
+    assert_eq!(
+        env.ok(&["auth", "status", "netflix"])["services"][0]["logged_in"],
+        true
+    );
     // A title page plays like its Play button (an episode of the show).
     let v = env.ok(&["open", SHOW, "--paused"]);
     assert_eq!(p(&v, "title"), "Black Mirror");
