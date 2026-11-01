@@ -6,7 +6,7 @@ screen. (It does not control physical TVs.) Every command prints JSON to
 stdout; errors go to stderr with exit code 1.
 
 Services are plugins (`tvctl plugins` lists them). Currently: YouTube,
-Spotify (web player), Netflix and Amazon Prime Video (amazon.com, US).
+Spotify (web player), Netflix and Amazon Prime Video (amazon.com and amazon.co.jp).
 macOS only for now.
 
 ## Install
@@ -60,7 +60,8 @@ tvctl close 1
 
 tvctl auth login youtube             # sign in once in tvctl's Chrome profile
 tvctl auth login spotify
-tvctl auth login primevideo
+tvctl auth login primevideo             # amazon.com (US)
+tvctl auth login primevideo --site jp   # amazon.co.jp (a separate account)
 tvctl auth login netflix
 tvctl auth status
 tvctl plugins                        # services, domains, supported actions
@@ -102,7 +103,7 @@ quit that Chrome with Cmd+Q; tvctl then checks the login cookies.
 | `youtube` | webview (logged out), chrome (logged in) | optional (Premium: no ads) | all; `audio` only in chrome |
 | `spotify` | chrome | required | play, pause, toggle, next, previous, seek, volume, mute |
 | `netflix` | chrome | required | all except previous, quality |
-| `primevideo` | chrome | required (Amazon account with Prime Video, US) | all except previous |
+| `primevideo` | chrome | required (amazon.com and/or amazon.co.jp account with Prime Video) | all except previous |
 
 Spotify links: tracks, albums, playlists, artists and episodes on
 `open.spotify.com`. A track link plays that track; other pages start from the top.
@@ -122,9 +123,12 @@ Ads (plans with ads) are not skipped and are handled like Prime Video's
 uses Netflix's internal player API (seeking through it; setting the video
 element's time directly breaks playback with error M7375).
 
-Prime Video links: `amazon.com/gp/video/detail/<id>`, `amazon.com/dp/<ASIN>` and
-`primevideo.com/detail/<id>` (all opened on amazon.com, where the US account is
-signed in). A series page plays the episode its Play button would (usually the
+Prime Video links: `amazon.com/gp/video/detail/<id>` and `amazon.com/dp/<ASIN>`
+(US), `amazon.co.jp/gp/video/detail/<id>` (Japan, also with a language prefix
+such as `/-/en/`), and `primevideo.com/detail/<id>` (opened on amazon.com).
+The US and Japanese stores are separate accounts; sign in to each you use
+(`auth login primevideo` and `auth login primevideo --site jp`); `auth status`
+shows both under `sites`. A series page plays the episode its Play button would (usually the
 next one to watch); a title resumes where it was left unless `--start` is given.
 `next` starts the next episode (`next_episode` in status). Speeds are the
 player's fixed rates (0.75 to 2); qualities are its data-usage settings `good`,
@@ -147,7 +151,12 @@ Each service is a directory `plugins/<name>/`:
     other actions with an error listing the supported ones, and
     `tvctl plugins` shows both, so agents can check before calling.
   - optional `[auth]`: `login_url`, `cookie_url`, `logged_in_cookies`,
-    `prefer_backend_when_logged_in`, `login_mode` (`plain` by default, or `controlled`)
+    `prefer_backend_when_logged_in`, `login_mode` (`plain` by default, or `controlled`).
+    Services with several separately signed-in sites (e.g. regional stores)
+    name the main site with `site` and add others as
+    `[auth.sites.<name>]` with their own `login_url`, `cookie_url` and
+    `logged_in_cookies`; `auth login <service> --site <name>` signs in to one,
+    and the service counts as logged in when any site is.
 - `webview.html`: the page for the WebView backend.
 - `frame.js` (optional): injected into that WebView's subframes.
 - `chrome.js`: the adapter for the Chrome backend. It is loaded into every

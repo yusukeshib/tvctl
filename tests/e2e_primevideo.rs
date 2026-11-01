@@ -1,6 +1,7 @@
-//! End-to-end tests against the real Prime Video web player (amazon.com, US).
-//! They need a tvctl data dir whose Chrome profile is signed in to an Amazon
-//! account with Prime Video (`tvctl auth login primevideo`):
+//! End-to-end tests against the real Prime Video web player on amazon.com (US)
+//! and amazon.co.jp (Japan). They need a tvctl data dir whose Chrome profile is
+//! signed in to both Amazon accounts with Prime Video
+//! (`tvctl auth login primevideo` and `tvctl auth login primevideo --site jp`):
 //!
 //!     TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl" \
 //!         cargo test --test e2e_primevideo -- --ignored --test-threads=1
@@ -36,6 +37,23 @@ fn env() -> Option<Env> {
     Some(env)
 }
 
+/// `open` that waits out Amazon's simultaneous-stream limit, which several
+/// quick opens on one account can hit while closed streams are released.
+fn open(env: &Env, args: &[&str]) -> Value {
+    let mut all = vec!["open"];
+    all.extend_from_slice(args);
+    for _ in 0..12 {
+        match env.run(&all) {
+            Ok(v) => return v,
+            Err(e) if e.contains("concurrency_limit") => {
+                std::thread::sleep(Duration::from_secs(30))
+            }
+            Err(e) => panic!("tvctl {all:?} failed: {e}"),
+        }
+    }
+    panic!("tvctl {all:?}: stream limit did not clear");
+}
+
 /// Waits until no ad plays (pre-roll ads can be a couple of minutes long).
 fn no_ad(env: &Env, id: &str) {
     eventually("the ad to end", Duration::from_secs(240), || {
@@ -48,16 +66,18 @@ fn no_ad(env: &Env, id: &str) {
 #[ignore = "needs a Prime Video login, network and windows; run with --ignored"]
 fn primevideo_movie_controls() {
     let Some(env) = env() else { return };
-    let v = env.ok(&[
-        "open",
-        "https://www.amazon.com/gp/video/detail/B0GHXVBQLM?ref_=atv_dp_amz_c_pZqpc5_1_2",
-        "--start",
-        "5:00",
-        "--subtitles",
-        "ja",
-        "--layout",
-        "right",
-    ]);
+    let v = open(
+        &env,
+        &[
+            "https://www.amazon.com/gp/video/detail/B0GHXVBQLM?ref_=atv_dp_amz_c_pZqpc5_1_2",
+            "--start",
+            "5:00",
+            "--subtitles",
+            "ja",
+            "--layout",
+            "right",
+        ],
+    );
     let id = v["id"].as_str().unwrap().to_string();
     let id = id.as_str();
     assert_eq!(v["service"], "primevideo");
@@ -159,7 +179,7 @@ fn primevideo_movie_controls() {
 #[ignore = "needs a Prime Video login, network and windows; run with --ignored"]
 fn primevideo_series_next_episode() {
     let Some(env) = env() else { return };
-    let v = env.ok(&["open", SERIES]);
+    let v = open(&env, &[SERIES]);
     let id = v["id"].as_str().unwrap().to_string();
     let id = id.as_str();
     assert_eq!(p(&v, "type"), "TV Show");
@@ -175,6 +195,48 @@ fn primevideo_series_next_episode() {
 
 #[test]
 #[ignore = "needs a Prime Video login, network and windows; run with --ignored"]
+fn primevideo_japan() {
+    let Some(env) = env() else { return };
+    let auth = env.ok(&["auth", "status", "primevideo"]);
+    let sites = &auth["services"][0]["sites"];
+    assert_eq!(
+        (sites["us"].clone(), sites["jp"].clone()),
+        (Value::Bool(true), Value::Bool(true)),
+        "{auth}"
+    );
+    // Reacher on amazon.co.jp (the path has a display-language prefix).
+    let v = open(
+        &env,
+        &[
+            "https://www.amazon.co.jp/-/en/gp/video/detail/B09R26WLZ5",
+            "--start",
+            "5:00",
+            "--subtitles",
+            "ja",
+        ],
+    );
+    let id = v["id"].as_str().unwrap().to_string();
+    let id = id.as_str();
+    assert!(
+        p(&v, "url")
+            .as_str()
+            .unwrap()
+            .starts_with("https://www.amazon.co.jp/"),
+        "{v}"
+    );
+    assert_eq!(p(&v, "type"), "TV Show");
+    no_ad(&env, id);
+    let s = env.ok(&["status", id]);
+    assert!((300.0..330.0).contains(&f(&p(&s, "current_time"))), "{s}");
+    assert_eq!(p(&s, "subtitles")["language"], "ja-jp", "{s}");
+    assert_eq!(p(&env.ok(&["pause", id]), "state"), "paused");
+    assert!((f(&p(&env.ok(&["seek", id, "10:00"]), "current_time")) - 600.0).abs() <= 1.0);
+    assert!(p(&env.ok(&["subtitles", id, "off"]), "subtitles").is_null());
+    env.ok(&["close", id]);
+}
+
+#[test]
+#[ignore = "needs a Prime Video login, network and windows; run with --ignored"]
 fn primevideo_urls() {
     let Some(env) = env() else { return };
     // Non-title Amazon pages are refused.
@@ -183,11 +245,13 @@ fn primevideo_urls() {
     // The failed open closed its window.
     assert_eq!(env.ok(&["list"]), serde_json::json!({ "players": [] }));
     // primevideo.com and /dp/ links open the amazon.com detail page; --paused works.
-    let v = env.ok(&[
-        "open",
-        "https://www.primevideo.com/detail/0HO80FV4Z40LP5NE2D9K7AQ0KD/ref=atv_sr_def_c_unkc__1_1_1",
-        "--paused",
-    ]);
+    let v = open(
+        &env,
+        &[
+            "https://www.primevideo.com/detail/0HO80FV4Z40LP5NE2D9K7AQ0KD/ref=atv_sr_def_c_unkc__1_1_1",
+            "--paused",
+        ],
+    );
     assert_eq!(p(&v, "title"), "Project Hail Mary");
     assert_eq!(p(&v, "state"), "paused");
     assert!(
@@ -198,11 +262,10 @@ fn primevideo_urls() {
         "{v}"
     );
     env.ok(&["close", v["id"].as_str().unwrap()]);
-    let v = env.ok(&[
-        "open",
-        &MOVIE.replace("/gp/video/detail/", "/dp/"),
-        "--paused",
-    ]);
+    let v = open(
+        &env,
+        &[&MOVIE.replace("/gp/video/detail/", "/dp/"), "--paused"],
+    );
     assert_eq!(p(&v, "title"), "Project Hail Mary");
     env.ok(&["close", v["id"].as_str().unwrap()]);
 }

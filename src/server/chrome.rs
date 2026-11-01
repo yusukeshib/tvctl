@@ -405,19 +405,23 @@ impl Backend {
 
     /// Opens the plugin's login page in a normal Chrome window and blocks until the
     /// user closes that window; then checks and records the login state.
-    pub fn login(&self, plugin: &Plugin) -> Result<Value> {
+    pub fn login(&self, plugin: &Plugin, site: Option<&str>) -> Result<Value> {
         let auth_cfg = plugin
             .manifest
             .auth
             .as_ref()
             .ok_or_else(|| anyhow!("{} has no login", plugin.name()))?;
+        let login_url = auth_cfg
+            .site(site)
+            .with_context(|| format!("{} login", plugin.name()))?
+            .login_url;
         if auth_cfg.login_mode == LoginMode::Plain {
-            self.plain_login(&auth_cfg.login_url)?;
+            self.plain_login(&login_url)?;
             return self.login_status(plugin);
         }
         let inst = self.instance()?;
         let events = inst.cdp.subscribe();
-        let target = self.new_window(&inst, &auth_cfg.login_url, false)?;
+        let target = self.new_window(&inst, &login_url, false)?;
         let _ = wait_event(&events, Duration::from_secs(30 * 60), |ev| {
             let closed = ev["method"] == CLOSED_EVENT
                 || (ev["method"] == "Target.targetDestroyed"
@@ -470,29 +474,25 @@ impl Backend {
             .as_ref()
             .ok_or_else(|| anyhow!("{} has no login", plugin.name()))?;
         let inst = self.instance()?;
-        let host = url::Url::parse(&auth_cfg.cookie_url)?
-            .host_str()
-            .unwrap_or_default()
-            .to_string();
         let cookies = inst.cdp.call(
             "Storage.getCookies",
             json!({}),
             None,
             Duration::from_secs(10),
         )?;
-        let logged_in = cookies["cookies"].as_array().is_some_and(|list| {
-            list.iter().any(|c| {
-                let domain = c["domain"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .trim_start_matches('.');
-                let name = c["name"].as_str().unwrap_or_default();
-                (host == domain || host.ends_with(&format!(".{domain}")))
-                    && auth_cfg.logged_in_cookies.iter().any(|n| n == name)
-            })
-        });
+        let list = cookies["cookies"].as_array().cloned().unwrap_or_default();
+        let mut sites = serde_json::Map::new();
+        for (name, site) in auth_cfg.all_sites() {
+            sites.insert(name, Value::Bool(has_login_cookie(&list, &site)?));
+        }
+        // A service with several sites counts as logged in when any site is.
+        let logged_in = sites.values().any(|v| v == &Value::Bool(true));
         auth::record(plugin.name(), logged_in);
-        Ok(json!({ "service": plugin.name(), "logged_in": logged_in }))
+        let mut out = json!({ "service": plugin.name(), "logged_in": logged_in });
+        if sites.len() > 1 {
+            out["sites"] = Value::Object(sites);
+        }
+        Ok(out)
     }
 
     fn respond(
@@ -513,6 +513,23 @@ impl Backend {
             "window": window_info(inst, player)?,
         }))
     }
+}
+
+/// Whether `cookies` (from `Storage.getCookies`) hold a login cookie of `site`.
+fn has_login_cookie(cookies: &[Value], site: &crate::plugin::AuthSite) -> Result<bool> {
+    let host = url::Url::parse(&site.cookie_url)?
+        .host_str()
+        .unwrap_or_default()
+        .to_string();
+    Ok(cookies.iter().any(|c| {
+        let domain = c["domain"]
+            .as_str()
+            .unwrap_or_default()
+            .trim_start_matches('.');
+        let name = c["name"].as_str().unwrap_or_default();
+        (host == domain || host.ends_with(&format!(".{domain}")))
+            && site.logged_in_cookies.iter().any(|n| n == name)
+    }))
 }
 
 fn spawn_chrome(chrome: &Path, profile: &Path, args: &[&str]) -> Result<std::process::Child> {
@@ -756,5 +773,23 @@ mod tests {
         );
         std::fs::write(dir.path().join("DevToolsActivePort"), "9222\n").unwrap();
         assert_eq!(read_devtools_port(dir.path()), None);
+    }
+
+    #[test]
+    fn login_cookies_per_site() {
+        let site = |url: &str, name: &str| crate::plugin::AuthSite {
+            login_url: format!("{url}/login"),
+            cookie_url: url.into(),
+            logged_in_cookies: vec![name.into()],
+        };
+        let us = site("https://www.amazon.com", "at-main");
+        let jp = site("https://www.amazon.co.jp", "at-acbjp");
+        let cookies = vec![
+            json!({ "domain": ".amazon.co.jp", "name": "at-acbjp" }),
+            // The right name on another site does not count.
+            json!({ "domain": ".example.com", "name": "at-main" }),
+        ];
+        assert!(!has_login_cookie(&cookies, &us).unwrap());
+        assert!(has_login_cookie(&cookies, &jp).unwrap());
     }
 }

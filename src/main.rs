@@ -79,7 +79,8 @@ enum Cmd {
     Open {
         /// Video or music URL of a supported service, e.g. a YouTube watch/youtu.be/shorts
         /// URL, an open.spotify.com track/album/playlist URL, a netflix.com
-        /// /watch or /title URL, or an amazon.com /gp/video/detail (Prime Video) URL.
+        /// /watch or /title URL, or an amazon.com / amazon.co.jp /gp/video/detail
+        /// (Prime Video) URL.
         url: String,
         /// Use this backend instead of choosing automatically. `webview`: native
         /// window, no login. `chrome`: tvctl's Chrome profile (logins, DRM).
@@ -284,12 +285,18 @@ enum ServerCmd {
 enum AuthCmd {
     /// Open the service's login page in tvctl's Chrome profile and wait.
     ///
-    /// Sign in, then quit that Chrome (Cmd+Q). Prints `{"service", "logged_in"}`.
+    /// Sign in, then quit that Chrome (Cmd+Q). Prints `{"service", "logged_in"}`
+    /// (plus `sites` with each site's state for services with several sites).
     /// Needs a person at the screen. Logged in, YouTube plays in Chrome (no ads with
     /// Premium); Spotify, Netflix and Prime Video require a login.
     Login {
         /// Plugin name, e.g. youtube, spotify, netflix, primevideo.
         service: String,
+        /// For services with several sites (`auth.sites` in `tvctl plugins`), the
+        /// site to sign in to, e.g. `jp` for primevideo on amazon.co.jp. Default:
+        /// the main site.
+        #[arg(long)]
+        site: Option<String>,
     },
     /// Show login state for one service or all services that support login.
     Status {
@@ -381,7 +388,7 @@ fn plan(cmd: Cmd) -> Result<Plan> {
             }
         }
         Cmd::Auth { action } => match action {
-            AuthCmd::Login { service } => Request::AuthLogin { service },
+            AuthCmd::Login { service, site } => Request::AuthLogin { service, site },
             AuthCmd::Status { service } => Request::AuthStatus { service },
         },
         Cmd::List => Request::List,
@@ -481,7 +488,11 @@ fn run(cmd: Cmd) -> Result<Value> {
             }))
         }
         Plan::Remote(req) => {
-            if let Request::AuthLogin { service } = &req {
+            if let Request::AuthLogin { service, site } = &req {
+                let service = match site {
+                    Some(s) => format!("{service} ({s})"),
+                    None => service.clone(),
+                };
                 eprintln!(
                     "Sign in to {service} in the Chrome window that opens, then quit that Chrome (Cmd+Q) \
                      (for some services, closing the login window is enough)."
@@ -762,7 +773,11 @@ mod tests {
         assert_eq!(req(&["close", "4"]), json!({ "cmd": "close", "id": "4" }));
         assert_eq!(
             req(&["auth", "login", "youtube"]),
-            json!({ "cmd": "auth_login", "service": "youtube" })
+            json!({ "cmd": "auth_login", "service": "youtube", "site": null })
+        );
+        assert_eq!(
+            req(&["auth", "login", "primevideo", "--site", "jp"]),
+            json!({ "cmd": "auth_login", "service": "primevideo", "site": "jp" })
         );
         assert_eq!(
             req(&["auth", "status"]),

@@ -211,9 +211,10 @@ impl Router {
                 BackendKind::Webview => Err("__eval is only available for chrome players".into()),
                 BackendKind::Chrome => self.chrome.eval(&id, &script).map_err(err),
             },
-            Request::AuthLogin { service } => {
-                self.chrome.login(self.auth_plugin(&service)?).map_err(err)
-            }
+            Request::AuthLogin { service, site } => self
+                .chrome
+                .login(self.auth_plugin(&service)?, site.as_deref())
+                .map_err(err),
             Request::AuthStatus { service } => {
                 let plugins: Vec<&Plugin> = match service {
                     Some(s) => vec![self.auth_plugin(&s)?],

@@ -1,4 +1,5 @@
-// Amazon Prime Video adapter (Chrome backend). Runs on amazon.com detail pages
+// Amazon Prime Video adapter (Chrome backend). Runs on amazon.com (US) and
+// amazon.co.jp (Japan; a separate account and login) detail pages
 // (/gp/video/detail/<id>), starts the title with the page's play button and then
 // drives the web player through its internal stores (playback, captions, audio,
 // bandwidth capper, ...), which the player keeps in a React context. These are
@@ -32,12 +33,15 @@ window.__tvctl = (() => {
     if (!id || !/^[A-Za-z0-9._-]+$/.test(id)) {
       throw new Error(`not a Prime Video title URL: ${raw} (expected https://www.amazon.com/gp/video/detail/<id>)`);
     }
-    return { id };
+    // The store the title is opened on. primevideo.com links open on amazon.com,
+    // where the US account is signed in.
+    const store = /(^|\.)amazon\.co\.jp$/.test(u.hostname) ? "www.amazon.co.jp" : "www.amazon.com";
+    return { id, store };
   }
 
-  // primevideo.com links are opened on amazon.com, where the US account is signed in.
-  const isDetailPage = () =>
-    /(^|\.)amazon\.com$/.test(location.hostname) && location.pathname.startsWith("/gp/video/detail/");
+  const isDetailPage = (store) =>
+    // The path may carry a display-language prefix, e.g. /-/en/gp/video/detail/.
+    location.hostname === store && /^(\/-\/[a-z-]+)?\/gp\/video\/detail\//i.test(location.pathname);
 
   // The player's store context, read from the React props of its container.
   let ctxCache = { el: null, ctx: null };
@@ -236,12 +240,14 @@ window.__tvctl = (() => {
     $("[data-testid='dp-atf-play-button']") || $("[data-automation-id='dp-atf-play-button']");
 
   async function open(a) {
-    const { id } = parseUrl(a.url);
-    if (!isDetailPage()) return { navigate: `https://www.amazon.com/gp/video/detail/${id}` };
+    const { id, store } = parseUrl(a.url);
+    if (!isDetailPage(store)) return { navigate: `https://${store}/gp/video/detail/${id}` };
     if (!(await waitFor(() => playButton() || isOpen(ctx()), 20000))) {
-      const signIn = [...document.querySelectorAll("a[href*='signin']")].some((e) => /sign in/i.test(e.textContent || ""));
+      const signIn = [...document.querySelectorAll("a[href*='signin']")]
+        .some((e) => /sign in|ログイン/i.test(e.textContent || ""));
+      const jp = store.endsWith(".co.jp");
       throw new Error(signIn
-        ? "not signed in to Amazon (run `tvctl auth login primevideo`)"
+        ? `not signed in to ${store} (run \`tvctl auth login primevideo${jp ? " --site jp" : ""}\`)`
         : "no play button on this page (the title may need to be rented, bought or subscribed to)");
     }
     if (!isOpen(ctx())) playButton().click();

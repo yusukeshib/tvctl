@@ -48,6 +48,9 @@ pub enum Request {
     /// Open the service's login page in the Chrome profile; blocks until closed.
     AuthLogin {
         service: String,
+        /// One of the service's login sites (`[auth.sites]`); the main one when None.
+        #[serde(default)]
+        site: Option<String>,
     },
     /// Check login state (all services with a login when `service` is None).
     AuthStatus {
@@ -224,6 +227,11 @@ mod tests {
             },
             Request::AuthLogin {
                 service: "youtube".into(),
+                site: None,
+            },
+            Request::AuthLogin {
+                service: "primevideo".into(),
+                site: Some("jp".into()),
             },
             Request::AuthStatus { service: None },
             Request::Window {

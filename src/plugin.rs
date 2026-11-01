@@ -95,6 +95,58 @@ pub struct Auth {
     pub prefer_backend_when_logged_in: Option<BackendKind>,
     #[serde(default)]
     pub login_mode: LoginMode,
+    /// Name of the site described by the fields above, when `sites` lists more.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
+    /// Further sites with their own logins (e.g. regional stores), by name.
+    /// `auth login --site <name>` signs in to one; the service counts as logged
+    /// in when any site is.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sites: BTreeMap<String, AuthSite>,
+}
+
+/// The login of one site of a service.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthSite {
+    pub login_url: String,
+    pub cookie_url: String,
+    pub logged_in_cookies: Vec<String>,
+}
+
+impl Auth {
+    /// Name of the main site (the top-level fields).
+    pub fn main_site(&self) -> &str {
+        self.site.as_deref().unwrap_or("default")
+    }
+
+    /// Every site, the main one first.
+    pub fn all_sites(&self) -> Vec<(String, AuthSite)> {
+        let main = AuthSite {
+            login_url: self.login_url.clone(),
+            cookie_url: self.cookie_url.clone(),
+            logged_in_cookies: self.logged_in_cookies.clone(),
+        };
+        std::iter::once((self.main_site().to_string(), main))
+            .chain(self.sites.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .collect()
+    }
+
+    /// The named site, or the main one when `name` is None.
+    pub fn site(&self, name: Option<&str>) -> Result<AuthSite> {
+        let all = self.all_sites();
+        let want = name.unwrap_or(self.main_site());
+        match all.iter().find(|(k, _)| k == want) {
+            Some((_, s)) => Ok(s.clone()),
+            None => bail!(
+                "unknown site {want:?} (sites: {})",
+                all.iter()
+                    .map(|(k, _)| k.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
 }
 
 /// How `auth login` opens the login page.
@@ -157,6 +209,15 @@ impl Plugin {
                     ACTIONS.join(", ")
                 );
             }
+        }
+        if let Some(a) = &manifest.auth
+            && a.sites.contains_key(a.main_site())
+        {
+            bail!(
+                "plugin {}: site {:?} is both the main site and in `sites`",
+                manifest.name,
+                a.main_site()
+            );
         }
         for b in &manifest.backends {
             if !files.contains_key(b.required_file()) {
@@ -305,6 +366,7 @@ mod tests {
         for u in [
             "https://www.amazon.com/gp/video/detail/B0GHXVBQLM",
             "amazon.com/dp/B0GHXVBQLM",
+            "https://www.amazon.co.jp/-/en/gp/video/detail/B09R26WLZ5",
             "https://www.primevideo.com/detail/0HO80FV4Z40LP5NE2D9K7AQ0KD",
         ] {
             assert_eq!(r.for_url(u).unwrap().0.name(), "primevideo", "{u}");
@@ -344,9 +406,11 @@ mod tests {
                 );
             }
             if let Some(a) = &p.manifest.auth {
-                Url::parse(&a.login_url).unwrap();
-                Url::parse(&a.cookie_url).unwrap();
-                assert!(!a.logged_in_cookies.is_empty(), "{}", p.name());
+                for (site, s) in a.all_sites() {
+                    Url::parse(&s.login_url).unwrap();
+                    Url::parse(&s.cookie_url).unwrap();
+                    assert!(!s.logged_in_cookies.is_empty(), "{} {site}", p.name());
+                }
                 if let Some(b) = a.prefer_backend_when_logged_in {
                     assert!(p.manifest.backends.contains(&b), "{}", p.name());
                 }
@@ -528,6 +592,40 @@ mod tests {
             let want = !matches!(*a, "previous" | "quality");
             assert_eq!(nf.supports(a, BackendKind::Chrome), want, "netflix {a}");
         }
+    }
+
+    #[test]
+    fn auth_sites() {
+        let r = Registry::load_with(None).unwrap();
+        let a = r.get("primevideo").unwrap().manifest.auth.as_ref().unwrap();
+        let names: Vec<String> = a.all_sites().into_iter().map(|(k, _)| k).collect();
+        assert_eq!(names, ["us", "jp"]);
+        assert_eq!(a.site(None).unwrap().cookie_url, "https://www.amazon.com");
+        assert_eq!(
+            a.site(Some("jp")).unwrap().cookie_url,
+            "https://www.amazon.co.jp"
+        );
+        let e = a.site(Some("uk")).unwrap_err().to_string();
+        assert!(e.contains("unknown site \"uk\" (sites: us, jp)"), "{e}");
+        // A single-site plugin has just the main site.
+        let yt = r.get("youtube").unwrap().manifest.auth.as_ref().unwrap();
+        assert_eq!(yt.all_sites().len(), 1);
+        assert!(yt.site(None).is_ok());
+        // The main site's name may not repeat in `sites`.
+        let mut files = BTreeMap::new();
+        files.insert("chrome.js".to_string(), String::new());
+        files.insert(
+            "plugin.toml".to_string(),
+            "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"chrome\"]\nactions = []\n\
+             [auth]\nsite = \"a\"\nlogin_url = \"https://x.com/l\"\ncookie_url = \"https://x.com\"\n\
+             logged_in_cookies = [\"c\"]\n[auth.sites.a]\nlogin_url = \"https://x.com/l\"\n\
+             cookie_url = \"https://x.com\"\nlogged_in_cookies = [\"c\"]\n"
+                .to_string(),
+        );
+        let e = Plugin::from_files(files, "t".into())
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("both the main site and in `sites`"), "{e}");
     }
 
     #[test]

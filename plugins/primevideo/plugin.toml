@@ -1,12 +1,21 @@
 name = "primevideo"
-description = "Amazon Prime Video (amazon.com/gp/video/detail and primevideo.com/detail pages, US storefront)"
-# amazon.com also routes store pages here; the adapter rejects non-video URLs.
-domains = ["amazon.com", "primevideo.com"]
+description = "Amazon Prime Video (amazon.com and amazon.co.jp /gp/video/detail pages, primevideo.com/detail pages)"
+# The amazon domains also route store pages here; the adapter rejects non-video URLs.
+domains = ["amazon.com", "amazon.co.jp", "primevideo.com"]
 # Playback needs a login and DRM, so only the Chrome backend works.
 backends = ["chrome"]
 actions = ["play", "pause", "toggle", "next", "seek", "subtitles", "audio", "volume", "speed", "quality"]
 
+# amazon.com (US) and amazon.co.jp (Japan) are separate accounts with separate
+# logins: `tvctl auth login primevideo` signs in to amazon.com,
+# `tvctl auth login primevideo --site jp` to amazon.co.jp.
 [auth]
+site = "us"
 login_url = "https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.com%2Fgp%2Fvideo%2Fstorefront&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=usflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0"
 cookie_url = "https://www.amazon.com"
 logged_in_cookies = ["at-main", "sess-at-main"]
+
+[auth.sites.jp]
+login_url = "https://www.amazon.co.jp/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.co.jp%2Fgp%2Fvideo%2Fstorefront&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=jpflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0"
+cookie_url = "https://www.amazon.co.jp"
+logged_in_cookies = ["at-acbjp", "sess-at-acbjp"]

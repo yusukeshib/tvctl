@@ -40,8 +40,9 @@ player closes.
 
 Supported URLs: YouTube (watch, youtu.be, shorts, live), Spotify
 (open.spotify.com tracks, albums, playlists), Netflix (netflix.com `/watch/<id>`
-or `/title/<id>`) and Prime Video (US amazon.com
-`/gp/video/detail/<id>`, `/dp/<ASIN>`, or primevideo.com `/detail/<id>`). `tvctl plugins` lists services and
+or `/title/<id>`) and Prime Video (amazon.com
+`/gp/video/detail/<id>` or `/dp/<ASIN>`, amazon.co.jp `/gp/video/detail/<id>`,
+or primevideo.com `/detail/<id>`). `tvctl plugins` lists services and
 the actions each supports; unsupported actions fail with an error listing the
 supported ones.
 
@@ -94,7 +95,12 @@ require a login, and a YouTube Premium login removes ads:
 ```sh
 tvctl auth status
 tvctl auth login youtube    # or spotify, netflix, primevideo
+tvctl auth login primevideo --site jp   # amazon.co.jp (separate from amazon.com)
 ```
+
+For Prime Video, amazon.com and amazon.co.jp are separate accounts; `tvctl auth
+status primevideo` shows each under `sites`. If `open` says it is not signed in
+to one of them, ask the user to run the matching login.
 
 `auth login` opens Chrome; the user must sign in and then quit that Chrome with
 Cmd+Q. Ask the user to do this; never handle their credentials.
