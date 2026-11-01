@@ -5,11 +5,22 @@ domains = ["amazon.com", "amazon.co.jp", "primevideo.com"]
 # Playback needs a login and DRM, so only the Chrome backend works.
 backends = ["chrome"]
 actions = ["play", "pause", "toggle", "next", "seek", "subtitles", "audio", "volume", "speed", "quality"]
+examples = ["https://www.amazon.com/gp/video/detail/B0GHXVBQLM", "https://www.amazon.co.jp/gp/video/detail/B09R26WLZ5"]
+notes = [
+  "amazon.com (US) and amazon.co.jp (Japan) are separate accounts with separate logins: `tvctl auth login primevideo` (US) and `tvctl auth login primevideo --site jp`. `tvctl auth status primevideo` shows both under `sites`.",
+  "URLs: amazon.com and amazon.co.jp `/gp/video/detail/<id>` (also with a language prefix such as `/-/en/`), amazon.com `/dp/<ASIN>`, and primevideo.com `/detail/<id>` (opened on amazon.com). Other Amazon pages are refused.",
+  "A title resumes where it was left unless `--start` is given; a series page plays the episode its Play button would. `next` starts the next episode (`next_episode` in status); there is no `previous`.",
+  "Speeds: 0.75, 1, 1.25, 1.5, 2. Quality values are Prime Video's data settings: good, better, best.",
+  "Ads are not skipped. While `ad_showing` is true (`ad_remaining`: seconds left), seeking, subtitles, audio and speed are refused; `open --start/--subtitles` are applied after the ad (`pending`).",
+  "Amazon limits simultaneous streams per account; then `open` fails with \"Maximum Streams Playing\". Close players you no longer need.",
+  "Video is DRM-protected: it can look black or white in `screenshot` and through screen sharing while it plays normally on the Mac's own display.",
+]
 
 # amazon.com (US) and amazon.co.jp (Japan) are separate accounts with separate
 # logins: `tvctl auth login primevideo` signs in to amazon.com,
 # `tvctl auth login primevideo --site jp` to amazon.co.jp.
 [auth]
+required = true
 site = "us"
 login_url = "https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.com%2Fgp%2Fvideo%2Fstorefront&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=usflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0"
 cookie_url = "https://www.amazon.com"

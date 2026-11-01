@@ -8,7 +8,7 @@ mod server;
 mod timeparse;
 
 use anyhow::{Result, anyhow};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde_json::{Value, json};
 
 use crate::layout::Layout;
@@ -249,8 +249,12 @@ enum Cmd {
         #[command(subcommand)]
         action: AuthCmd,
     },
-    /// List plugins: domains, backends, supported actions, login settings.
-    Plugins,
+    /// List the supported services (plugins), or show one: URL domains and
+    /// examples, supported commands, login, and notes on its limits and values.
+    Plugins {
+        /// Plugin name, e.g. netflix; all plugins when omitted.
+        name: Option<String>,
+    },
     /// Manage the background server (normally automatic).
     Server {
         #[command(subcommand)]
@@ -346,7 +350,7 @@ enum Plan {
     ServerUp,
     ServerDown,
     ServerStatus,
-    Plugins,
+    Plugins(Option<String>),
     Remote(Request),
 }
 
@@ -360,7 +364,7 @@ fn plan(cmd: Cmd) -> Result<Plan> {
                 ServerCmd::Status => Plan::ServerStatus,
             });
         }
-        Cmd::Plugins => return Ok(Plan::Plugins),
+        Cmd::Plugins { name } => return Ok(Plan::Plugins(name)),
         Cmd::Open {
             url,
             backend,
@@ -480,12 +484,15 @@ fn run(cmd: Cmd) -> Result<Value> {
         Plan::ServerUp => client::server_up(),
         Plan::ServerDown => client::server_down(),
         Plan::ServerStatus => client::server_status(),
-        Plan::Plugins => {
+        Plan::Plugins(name) => {
             let registry = plugin::Registry::load()?;
-            Ok(json!({
-                "external_dir": plugin::external_dir(),
-                "plugins": registry.plugins(),
-            }))
+            match name {
+                Some(name) => registry.describe(&name),
+                None => Ok(json!({
+                    "external_dir": plugin::external_dir(),
+                    "plugins": registry.plugins().iter().map(plugin::Plugin::summary).collect::<Vec<_>>(),
+                })),
+            }
         }
         Plan::Remote(req) => {
             if let Request::AuthLogin { service, site } = &req {
@@ -509,8 +516,20 @@ fn run(cmd: Cmd) -> Result<Value> {
     }
 }
 
+/// The command line with the installed services listed in `--help`.
+fn command() -> clap::Command {
+    let services = match plugin::Registry::load() {
+        Ok(r) => r.help_section(),
+        Err(e) => format!("Services: could not load plugins: {e:#}"),
+    };
+    Cli::command().after_long_help(format!("{AFTER_LONG_HELP}\n\n{services}"))
+}
+
 fn main() {
-    let cli = Cli::parse();
+    let cli = match Cli::from_arg_matches(&command().get_matches()) {
+        Ok(cli) => cli,
+        Err(e) => e.exit(),
+    };
     let is_serve = matches!(cli.command, Cmd::Serve { .. });
     match run(cli.command) {
         Ok(v) if !is_serve => {
@@ -561,7 +580,8 @@ mod tests {
             (vec!["server", "up"], "ServerUp"),
             (vec!["server", "down"], "ServerDown"),
             (vec!["server", "status"], "ServerStatus"),
-            (vec!["plugins"], "Plugins"),
+            (vec!["plugins"], "Plugins(None)"),
+            (vec!["plugins", "netflix"], "Plugins(Some(\"netflix\"))"),
             (vec!["__serve"], "Serve(false)"),
             (vec!["__serve", "--persistent"], "Serve(true)"),
         ] {
@@ -798,7 +818,6 @@ mod tests {
     /// Agents rely on `--help`: every visible command and argument is described.
     #[test]
     fn help_is_complete() {
-        use clap::CommandFactory;
         fn check(cmd: &clap::Command, path: &str) {
             for sub in cmd
                 .get_subcommands()
@@ -830,6 +849,18 @@ mod tests {
             "Examples:",
             "tvctl plugins",
             "exit",
+        ] {
+            assert!(long.contains(needle), "long help lacks {needle:?}");
+        }
+        // The real command lists the installed services, with how to learn more.
+        let long = command().render_long_help().to_string();
+        for needle in [
+            "Services (installed plugins)",
+            "tvctl plugins <name>",
+            "netflix",
+            "primevideo",
+            "(login required)",
+            "e.g. tvctl open 'https://www.netflix.com/",
         ] {
             assert!(long.contains(needle), "long help lacks {needle:?}");
         }

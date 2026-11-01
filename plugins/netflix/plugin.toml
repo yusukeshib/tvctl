@@ -4,8 +4,20 @@ domains = ["netflix.com"]
 # Playback needs a login and DRM, so only the Chrome backend works.
 backends = ["chrome"]
 actions = ["play", "pause", "toggle", "next", "seek", "subtitles", "audio", "volume", "speed"]
+examples = ["https://www.netflix.com/title/81726701", "https://www.netflix.com/watch/81716297"]
+notes = [
+  "Needs a Netflix login (`tvctl auth login netflix`). Which titles exist depends on the country you are in.",
+  "Find a title's id with Netflix search (`https://www.netflix.com/search?q=...`; result links carry `jbv=<id>`), then open `https://www.netflix.com/title/<id>`: it plays like the Play button (a show continues its current episode). `/watch/<id>` opens an episode or movie directly.",
+  "Status has `episode` {title, number, season} and `next_episode`; `next` switches to the next episode in place. There is no `previous`.",
+  "Subtitles prefer full subtitles over closed captions (`type` PRIMARY / ASSISTIVE); audio prefers regular tracks over audio description; track ids from `subtitles <ID> list` / `audio <ID> list` also work.",
+  "Speeds: 0.5, 0.75, 1, 1.25, 1.5. Netflix has no quality setting on the web.",
+  "Plans with ads: ads are not skipped. While `ad_showing` is true, seeking, subtitles, audio and speed are refused; `open --start/--subtitles` are applied after the ad (`pending`).",
+  "Unavailable titles fail with Netflix's message (e.g. UI3003: not available in your country).",
+  "Video is DRM-protected: it can look black or white in `screenshot` and through screen sharing while it plays normally on the Mac's own display.",
+]
 
 [auth]
+required = true
 login_url = "https://www.netflix.com/login"
 cookie_url = "https://www.netflix.com"
 # NetflixId/SecureNetflixId are set for anonymous visitors too; these are not.

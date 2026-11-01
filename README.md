@@ -65,6 +65,7 @@ tvctl auth login primevideo --site jp   # amazon.co.jp (a separate account)
 tvctl auth login netflix
 tvctl auth status
 tvctl plugins                        # services, domains, supported actions
+tvctl plugins netflix                # one service: URL examples, login, notes
 ```
 
 The background server starts on demand (`open`, `auth`) and stops a few seconds
@@ -153,11 +154,17 @@ Each service is a directory `plugins/<name>/`:
 
 - `plugin.toml`:
   - `name`, `description`, `domains` (subdomains match too), `backends`
+  - `examples`: example URLs (each must be on one of the `domains`) and `notes`:
+    what agents and users need to know (how to find URLs, limits, accepted
+    values, ads, login hints). `tvctl --help` lists every installed service with
+    its first example, and `tvctl plugins <name>` shows the rest, so agent
+    instructions (`skills/tvctl/SKILL.md`) need no per-service text.
   - `actions`: supported player actions; optional `[unsupported_actions]` lists
     actions a backend lacks (e.g. `webview = ["audio"]`). The server refuses
     other actions with an error listing the supported ones, and
     `tvctl plugins` shows both, so agents can check before calling.
-  - optional `[auth]`: `login_url`, `cookie_url`, `logged_in_cookies`,
+  - optional `[auth]`: `required` (playback needs a login), `login_url`,
+    `cookie_url`, `logged_in_cookies`,
     `prefer_backend_when_logged_in`, `login_mode` (`plain` by default, or `controlled`).
     Services with several separately signed-in sites (e.g. regional stores)
     name the main site with `site` and add others as

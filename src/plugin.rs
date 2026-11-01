@@ -56,6 +56,13 @@ pub struct Manifest {
     /// Actions from `actions` that a specific backend lacks.
     #[serde(default)]
     pub unsupported_actions: BTreeMap<BackendKind, Vec<String>>,
+    /// Example URLs (shown in `tvctl --help` and `tvctl plugins`); each must be
+    /// handled by this plugin.
+    #[serde(default)]
+    pub examples: Vec<String>,
+    /// Notes for agents and users: limits, accepted values, login hints.
+    #[serde(default)]
+    pub notes: Vec<String>,
     pub auth: Option<Auth>,
 }
 
@@ -89,6 +96,9 @@ impl Manifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Auth {
+    /// Playback needs a login (otherwise a login is optional, e.g. for no ads).
+    #[serde(default)]
+    pub required: bool,
     pub login_url: String,
     pub cookie_url: String,
     pub logged_in_cookies: Vec<String>,
@@ -177,6 +187,49 @@ impl Plugin {
         &self.manifest.name
     }
 
+    /// What `tvctl plugins` shows: what an agent needs to use the service,
+    /// without internals such as login cookies.
+    pub fn summary(&self) -> serde_json::Value {
+        let m = &self.manifest;
+        let login = m.auth.as_ref().map(|a| {
+            let sites: Vec<String> = a.all_sites().into_iter().map(|(k, _)| k).collect();
+            let commands: Vec<String> = if sites.len() > 1 {
+                std::iter::once(format!("tvctl auth login {}", m.name))
+                    .chain(
+                        a.sites
+                            .keys()
+                            .map(|s| format!("tvctl auth login {} --site {s}", m.name)),
+                    )
+                    .collect()
+            } else {
+                vec![format!("tvctl auth login {}", m.name)]
+            };
+            let mut v = serde_json::json!({
+                "required": a.required,
+                "commands": commands,
+            });
+            if sites.len() > 1 {
+                v["sites"] = serde_json::json!(sites);
+            }
+            if let Some(b) = a.prefer_backend_when_logged_in {
+                v["backend_when_logged_in"] = serde_json::json!(b);
+            }
+            v
+        });
+        serde_json::json!({
+            "name": m.name,
+            "description": m.description,
+            "domains": m.domains,
+            "examples": m.examples,
+            "backends": m.backends,
+            "actions": m.actions,
+            "unsupported_actions": m.unsupported_actions,
+            "login": login,
+            "notes": m.notes,
+            "source": self.source,
+        })
+    }
+
     pub fn file(&self, name: &str) -> Option<&str> {
         self.files.get(name).map(String::as_str)
     }
@@ -207,6 +260,22 @@ impl Plugin {
                     "plugin {}: unknown action {a:?} (known: {})",
                     manifest.name,
                     ACTIONS.join(", ")
+                );
+            }
+        }
+        for e in &manifest.examples {
+            let host = parse_url(e)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+                .unwrap_or_default();
+            let handled = manifest
+                .domains
+                .iter()
+                .any(|d| host == *d || host.ends_with(&format!(".{d}")));
+            if !handled {
+                bail!(
+                    "plugin {}: example {e:?} is not on one of its domains",
+                    manifest.name
                 );
             }
         }
@@ -303,6 +372,38 @@ impl Registry {
                 )
             }
         }
+    }
+
+    /// `tvctl plugins NAME`: one plugin's summary.
+    pub fn describe(&self, name: &str) -> Result<serde_json::Value> {
+        match self.get(name) {
+            Some(p) => Ok(p.summary()),
+            None => {
+                let names: Vec<&str> = self.plugins.iter().map(|p| p.name()).collect();
+                bail!("no plugin named {name:?} (plugins: {})", names.join(", "))
+            }
+        }
+    }
+
+    /// The "Services" section of `tvctl --help`.
+    pub fn help_section(&self) -> String {
+        let mut s = String::from(
+            "Services (installed plugins). `tvctl plugins <name>` shows a service's URLs,\n\
+             supported commands, login and notes; read it before using a service:\n",
+        );
+        for p in &self.plugins {
+            let m = &p.manifest;
+            let login = match &m.auth {
+                Some(a) if a.required => "login required",
+                Some(_) => "login optional",
+                None => "no login",
+            };
+            s.push_str(&format!("  {:<12} {} ({login})\n", m.name, m.description));
+            if let Some(e) = m.examples.first() {
+                s.push_str(&format!("  {:<12} e.g. tvctl open '{e}'\n", ""));
+            }
+        }
+        s.trim_end().to_string()
     }
 }
 
@@ -404,6 +505,16 @@ mod tests {
                     p.name(),
                     b.required_file()
                 );
+            }
+            // Agents learn services from `tvctl --help` / `tvctl plugins`.
+            assert!(
+                !p.manifest.examples.is_empty(),
+                "{} has no examples",
+                p.name()
+            );
+            assert!(!p.manifest.notes.is_empty(), "{} has no notes", p.name());
+            for e in &p.manifest.examples {
+                assert_eq!(r.for_url(e).unwrap().0.name(), p.name(), "{e}");
             }
             if let Some(a) = &p.manifest.auth {
                 for (site, s) in a.all_sites() {
@@ -592,6 +703,55 @@ mod tests {
             let want = !matches!(*a, "previous" | "quality");
             assert_eq!(nf.supports(a, BackendKind::Chrome), want, "netflix {a}");
         }
+    }
+
+    #[test]
+    fn summaries_and_help() {
+        let r = Registry::load_with(None).unwrap();
+        let pv = r.describe("primevideo").unwrap();
+        assert_eq!(pv["login"]["required"], true);
+        assert_eq!(
+            pv["login"]["commands"],
+            serde_json::json!([
+                "tvctl auth login primevideo",
+                "tvctl auth login primevideo --site jp"
+            ])
+        );
+        assert_eq!(pv["login"]["sites"], serde_json::json!(["us", "jp"]));
+        // Login internals are not part of the summary.
+        assert!(!pv.to_string().contains("logged_in_cookies"));
+        assert!(pv["notes"].as_array().unwrap().len() > 1);
+        let yt = r.describe("youtube").unwrap();
+        assert_eq!(yt["login"]["required"], false);
+        assert_eq!(yt["login"]["backend_when_logged_in"], "chrome");
+        assert!(yt["login"].get("sites").is_none());
+        let e = r.describe("hulu").unwrap_err().to_string();
+        assert!(
+            e.contains("no plugin named \"hulu\" (plugins: netflix, primevideo, spotify, youtube)"),
+            "{e}"
+        );
+        let help = r.help_section();
+        assert!(
+            help.contains("youtube") && help.contains("(login optional)"),
+            "{help}"
+        );
+        assert!(
+            help.contains("spotify") && help.contains("(login required)"),
+            "{help}"
+        );
+        // An example must be on one of the plugin's domains.
+        let mut files = BTreeMap::new();
+        files.insert("chrome.js".to_string(), String::new());
+        files.insert(
+            "plugin.toml".to_string(),
+            "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"chrome\"]\nactions = []\n\
+             examples = [\"https://y.com/v\"]\n"
+                .to_string(),
+        );
+        let e = Plugin::from_files(files, "t".into())
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("not on one of its domains"), "{e}");
     }
 
     #[test]

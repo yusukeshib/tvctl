@@ -1,6 +1,6 @@
 ---
 name: tvctl
-description: Play and control YouTube videos, Spotify music, Netflix and Amazon Prime Video titles in windows on the user's Mac with the tvctl CLI (open a URL, play/pause, seek, skip, subtitles incl. Japanese, audio track, volume, speed, quality, window size/position/layout/fullscreen, screenshots). Use when the user asks to play, watch, listen to, or control a video or song on their screen.
+description: Play and control videos and music from streaming services (YouTube, Netflix, Spotify and more; `tvctl --help` lists them) in windows on the user's Mac with the tvctl CLI (open a URL, play/pause, seek, skip, next episode, subtitles incl. Japanese, audio track, volume, speed, quality, window size/position/layout/fullscreen, screenshots). Use when the user asks to play, watch, listen to, or control a video, show, movie or song on their screen.
 ---
 
 # tvctl
@@ -23,10 +23,26 @@ cargo install tvctl
   tvctl, and tell the user if it upgraded.
 - Needs Rust (`cargo`). If `cargo` is missing, ask the user before installing
   Rust (https://rustup.rs).
-- Check the installed version with `tvctl --version`.
-- Requirements: macOS. Google Chrome for logged-in playback, Spotify, Netflix and Prime Video.
+- Requirements: macOS; Google Chrome for services that need a login or DRM.
 
-## 2. Basic use
+## 2. Learn the services from tvctl itself
+
+The supported services change between versions, so do not rely on memory:
+
+```sh
+tvctl --help                # workflow, output format, and the installed services
+tvctl plugins <name>        # one service: URL domains and examples, supported
+                            # commands, login, and notes on its limits and values
+```
+
+Before using a service in a session, read its `tvctl plugins <name>` output,
+especially `notes` (e.g. how to find a title's URL, accepted speed/quality values,
+ads, regional accounts) and `login` (whether a login is required and the exact
+`tvctl auth login ...` commands). A URL is handled by the service whose `domains`
+match its host. Commands a service does not support fail with an error listing
+the supported ones.
+
+## 3. Basic use
 
 ```sh
 tvctl open '<URL>'          # opens a window; prints {"id": "1", ...}
@@ -36,17 +52,7 @@ tvctl close <ID>
 
 Use the `id` from `open` (or `tvctl list`) in later commands. No setup is needed:
 a background server starts on demand and stops a few seconds after the last
-player closes.
-
-Supported URLs: YouTube (watch, youtu.be, shorts, live), Spotify
-(open.spotify.com tracks, albums, playlists), Netflix (netflix.com `/watch/<id>`
-or `/title/<id>`) and Prime Video (amazon.com
-`/gp/video/detail/<id>` or `/dp/<ASIN>`, amazon.co.jp `/gp/video/detail/<id>`,
-or primevideo.com `/detail/<id>`). `tvctl plugins` lists services and
-the actions each supports; unsupported actions fail with an error listing the
-supported ones.
-
-## 3. Commands
+player closes. Quote URLs (`'...'`): `?` and `&` break in shells such as zsh.
 
 | Goal | Command |
 |---|---|
@@ -54,11 +60,11 @@ supported ones.
 | Next / previous item | `tvctl next <ID>`, `tvctl prev <ID>` |
 | Seek | `tvctl seek <ID> 1:30` (absolute), `tvctl seek <ID> +30` / `-10` (relative) |
 | Skip | `tvctl forward <ID> 5m`, `tvctl back <ID>` (default 10 s) |
-| Subtitles | `tvctl subtitles <ID> ja` (Japanese; auto-translated if needed), `on`, `off`, `list` |
+| Subtitles | `tvctl subtitles <ID> ja`, `on`, `off`, `list` |
 | Audio track | `tvctl audio <ID> list`, `tvctl audio <ID> ja` |
 | Volume | `tvctl volume <ID> 40`, `tvctl mute <ID>`, `tvctl unmute <ID>` |
 | Speed | `tvctl speed <ID> 1.5` |
-| Quality | `tvctl quality <ID> hd720` (values: `available_qualities` in status) |
+| Quality | `tvctl quality <ID> <value>` (values: `available_qualities` in status) |
 | Window | `tvctl window <ID> --size 1280x720 --position 100,50` |
 | Layout | `tvctl window <ID> --layout left` (left, right, top, bottom, top-left, top-right, bottom-left, bottom-right, center, maximize) |
 | Small corner window | `tvctl window <ID> --layout bottom-right --size 480x270` |
@@ -68,52 +74,39 @@ supported ones.
 `open` accepts the same options up front, e.g.
 `tvctl open '<URL>' --layout center --size 1280x720 --subtitles ja --start 1:00 --paused`.
 `--size` is the video area in logical pixels; a layout without `--size` fills
-that screen region.
+that screen region. `tvctl <command> --help` describes every argument.
 
-## 4. Tips
+## 4. Reading results
 
-- Quote URLs (`'...'`): `?` and `&` break in shells such as zsh.
+- Read the JSON after every command; `player` holds the service's state.
+- A `warning` field (top level or in `player`) explains something to act on or
+  tell the user. A `pending` field lists settings applied later (e.g. after an ad).
 - After seeking, `state` may briefly be `buffering`; check `status` again.
-- Japanese subtitles: if a video has no Japanese track, tvctl uses YouTube's
-  auto-translation (`translated_to: "ja"` in the output). If `subtitles list`
-  shows no tracks, the video has no subtitles.
-- Netflix: `next` plays the next episode (`next_episode` in status); speeds
-  0.5 to 1.5; no quality setting. Ads are handled like Prime Video's below.
-- Prime Video: ads are not skipped. While `ad_showing` is true, seeking,
-  subtitles, audio and speed fail; wait `ad_remaining` seconds and retry.
-  Quality values are `good`, `better`, `best`; `next` plays the next episode.
-  Amazon limits simultaneous streams, so close Prime Video players you no longer
-  need.
 - To verify what is on screen, take a screenshot rather than assuming.
+  Protected (DRM) video can look black or white in screenshots and through screen
+  sharing while it plays normally on the Mac's own display.
 - If the user closes the window, the player id becomes invalid (`no player`).
 
 ## 5. Logins (needs the user)
 
-YouTube works without a login (ads may play). Spotify, Netflix and Prime Video
-require a login, and a YouTube Premium login removes ads:
-
 ```sh
-tvctl auth status
-tvctl auth login youtube    # or spotify, netflix, primevideo
-tvctl auth login primevideo --site jp   # amazon.co.jp (separate from amazon.com)
+tvctl auth status           # login state per service (and per site)
 ```
 
-For Prime Video, amazon.com and amazon.co.jp are separate accounts; `tvctl auth
-status primevideo` shows each under `sites`. If `open` says it is not signed in
-to one of them, ask the user to run the matching login.
-
-`auth login` opens Chrome; the user must sign in and then quit that Chrome with
-Cmd+Q. Ask the user to do this; never handle their credentials.
+If a service needs a login (`login.required` in `tvctl plugins <name>`, or an
+error saying it is not signed in), ask the user to run the exact command from
+`login.commands`. `auth login` opens Chrome; the user signs in and then quits that
+Chrome with Cmd+Q. Never handle their credentials. Logins belong to tvctl's own
+Chrome profile, not the user's everyday browser.
 
 ## 6. Troubleshooting
 
+- Follow the error message: tvctl errors say what to do (e.g. which login to run).
 - `error: ... server is not running` for a player command: the player was closed;
   open it again.
 - A `warning` about an SSH session (or `auth login` refused for that reason):
   the tvctl server was started over SSH, where Chrome cannot use the macOS
   keychain, so logins are not saved or loaded. Run `tvctl server down` and ask
   the user to run tvctl from a terminal on the Mac's own screen.
-- Protected (DRM) video can look black or white in screenshots and through
-  screen sharing while it plays normally on the Mac's own display.
 - Unexpected behavior: run `cargo install tvctl` to update, then retry.
 - Server log: `$TMPDIR/tvctl.log`.

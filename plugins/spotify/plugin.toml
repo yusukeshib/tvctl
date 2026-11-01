@@ -5,8 +5,16 @@ domains = ["open.spotify.com"]
 backends = ["chrome"]
 # The web player has no subtitles, audio tracks, speed or quality settings.
 actions = ["play", "pause", "toggle", "next", "previous", "seek", "volume"]
+examples = ["https://open.spotify.com/album/5Z9iiGl2FcIfa3BMiv6OIw", "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT"]
+notes = [
+  "Needs a Spotify login (`tvctl auth login spotify`).",
+  "A track link plays that track; album, playlist, artist and episode links start from the top. `next` / `previous` skip tracks.",
+  "Opens in Spotify's large cover-art view, shown inside the window.",
+  "`--paused` is best effort; playback is refused when the account is playing on another device.",
+]
 
 [auth]
+required = true
 login_url = "https://accounts.spotify.com/login?continue=https%3A%2F%2Fopen.spotify.com%2F"
 cookie_url = "https://open.spotify.com"
 logged_in_cookies = ["sp_dc"]
