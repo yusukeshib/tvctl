@@ -153,6 +153,32 @@ pub fn server_down() -> Result<Value> {
     Ok(json!({ "running": is_running(), "was_running": true }))
 }
 
+/// `duck on/off`: saves the settings and applies them to a running server.
+pub fn duck_set(config: crate::duck::Config) -> Result<Value> {
+    crate::duck::save(&config)?;
+    if is_running() {
+        send(&Request::Duck { config })
+    } else {
+        Ok(crate::duck::offline_status(&config))
+    }
+}
+
+pub fn duck_status() -> Result<Value> {
+    if is_running() {
+        send(&Request::DuckStatus)
+    } else {
+        Ok(crate::duck::offline_status(&crate::duck::load()))
+    }
+}
+
+pub fn duck_apps() -> Result<Value> {
+    if is_running() {
+        send(&Request::DuckApps)
+    } else {
+        Ok(crate::duck::apps(None))
+    }
+}
+
 pub fn server_status() -> Result<Value> {
     if is_running() {
         let mut info = send(&Request::Ping)?;

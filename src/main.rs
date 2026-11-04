@@ -1,6 +1,7 @@
 mod auth;
 mod cdp;
 mod client;
+mod duck;
 mod layout;
 mod plugin;
 mod protocol;
@@ -59,6 +60,7 @@ Examples:
   tvctl subtitles 1 ja            # Japanese subtitles (auto-translated if needed)
   tvctl window 1 --layout left    # snap to the left half of the screen
   tvctl screenshot 1 /tmp/now.png # see what the window shows
+  tvctl duck on --apps ChatGPT    # lower players while ChatGPT speaks
   tvctl auth login youtube        # one-time login (needed for Spotify, Netflix, Prime Video, Crunchyroll)";
 
 const ID: &str = "Player id, from the output of `open` or `list`";
@@ -249,6 +251,12 @@ enum Cmd {
         #[command(subcommand)]
         action: AuthCmd,
     },
+    /// Lower all players while other audio plays (e.g. a voice assistant
+    /// speaking), and restore them when it stops.
+    Duck {
+        #[command(subcommand)]
+        action: DuckCmd,
+    },
     /// List the supported services (plugins), or show one: URL domains and
     /// examples, supported commands, login, and notes on its limits and values.
     Plugins {
@@ -283,6 +291,33 @@ enum ServerCmd {
     Down,
     /// Show whether the server is running, its pid, players and mode.
     Status,
+}
+
+#[derive(Subcommand)]
+enum DuckCmd {
+    /// Turn ducking on (saved; applies whenever players are open).
+    ///
+    /// While other audio plays, every player plays at `--level` percent of its
+    /// own volume (`volume` and `status` keep showing the player's own volume).
+    /// Other audio is every app except tvctl's players, or only `--apps`.
+    /// macOS 14.2+; macOS asks once for permission to record system audio, on
+    /// behalf of the app that started tvctl (e.g. the terminal).
+    On {
+        /// Volume while other audio plays, in percent of each player's volume.
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u8).range(0..=100))]
+        level: u8,
+        /// Only these apps count, comma-separated: app names (ChatGPT), process
+        /// names or bundle ids (com.openai.chat). See `tvctl duck apps`.
+        #[arg(long, value_delimiter = ',')]
+        apps: Option<Vec<String>>,
+    },
+    /// Turn ducking off and restore the players' volume.
+    Off,
+    /// Show the settings and whether players are lowered now (`ducking`), the
+    /// level of the monitored audio (`peak_db`) and which apps play (`sources`).
+    Status,
+    /// List the processes playing audio now, with the names usable in `--apps`.
+    Apps,
 }
 
 #[derive(Subcommand)]
@@ -351,6 +386,9 @@ enum Plan {
     ServerDown,
     ServerStatus,
     Plugins(Option<String>),
+    DuckSet(duck::Config),
+    DuckStatus,
+    DuckApps,
     Remote(Request),
 }
 
@@ -365,6 +403,32 @@ fn plan(cmd: Cmd) -> Result<Plan> {
             });
         }
         Cmd::Plugins { name } => return Ok(Plan::Plugins(name)),
+        Cmd::Duck { action } => {
+            return Ok(match action {
+                DuckCmd::On { level, apps } => {
+                    let apps: Option<Vec<String>> = apps.map(|a| {
+                        a.into_iter()
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    });
+                    if apps.as_ref().is_some_and(Vec::is_empty) {
+                        return Err(anyhow!("--apps needs at least one app"));
+                    }
+                    Plan::DuckSet(duck::Config {
+                        enabled: true,
+                        level,
+                        apps,
+                    })
+                }
+                DuckCmd::Off => Plan::DuckSet(duck::Config {
+                    enabled: false,
+                    ..duck::load()
+                }),
+                DuckCmd::Status => Plan::DuckStatus,
+                DuckCmd::Apps => Plan::DuckApps,
+            });
+        }
         Cmd::Open {
             url,
             backend,
@@ -484,6 +548,9 @@ fn run(cmd: Cmd) -> Result<Value> {
         Plan::ServerUp => client::server_up(),
         Plan::ServerDown => client::server_down(),
         Plan::ServerStatus => client::server_status(),
+        Plan::DuckSet(config) => client::duck_set(config),
+        Plan::DuckStatus => client::duck_status(),
+        Plan::DuckApps => client::duck_apps(),
         Plan::Plugins(name) => {
             let registry = plugin::Registry::load()?;
             match name {
@@ -590,6 +657,47 @@ mod tests {
             let p = plan(Cli::try_parse_from(argv).unwrap().command).unwrap();
             assert_eq!(format!("{p:?}"), expect);
         }
+    }
+
+    fn duck_plan(args: &[&str]) -> Plan {
+        let mut argv = vec!["tvctl", "duck"];
+        argv.extend_from_slice(args);
+        plan(Cli::try_parse_from(argv).unwrap().command).unwrap()
+    }
+
+    #[test]
+    fn duck_commands() {
+        let config = |p: Plan| match p {
+            Plan::DuckSet(c) => c,
+            other => panic!("expected DuckSet, got {other:?}"),
+        };
+        assert_eq!(
+            config(duck_plan(&["on"])),
+            duck::Config {
+                enabled: true,
+                level: 10,
+                apps: None
+            }
+        );
+        assert_eq!(
+            config(duck_plan(&[
+                "on",
+                "--level",
+                "25",
+                "--apps",
+                "ChatGPT, com.zoom.xos"
+            ])),
+            duck::Config {
+                enabled: true,
+                level: 25,
+                apps: Some(vec!["ChatGPT".into(), "com.zoom.xos".into()])
+            }
+        );
+        assert!(!config(duck_plan(&["off"])).enabled);
+        assert!(matches!(duck_plan(&["status"]), Plan::DuckStatus));
+        assert!(matches!(duck_plan(&["apps"]), Plan::DuckApps));
+        rejects(&["duck", "on", "--level", "101"]);
+        rejects(&["duck", "on", "--apps", " , "]);
     }
 
     #[test]

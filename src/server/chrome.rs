@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use super::Players;
 use crate::auth;
 use crate::cdp::{CLOSED_EVENT, Cdp};
+use crate::duck;
 use crate::layout::{self, Rect};
 use crate::plugin::{LoginMode, Plugin};
 use crate::protocol::{Switch, WindowOpts};
@@ -58,6 +59,21 @@ fn chrome_path() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("Google Chrome not found (set TVCTL_CHROME to its executable)"))
 }
 
+fn profile_dir() -> PathBuf {
+    auth::data_dir().join("chrome-profile")
+}
+
+/// Pid of the Chrome running on tvctl's profile, from Chrome's `SingletonLock`
+/// (a symlink to `<hostname>-<pid>`).
+pub fn browser_pid() -> Option<i32> {
+    let target = std::fs::read_link(profile_dir().join("SingletonLock")).ok()?;
+    parse_singleton_lock(&target.to_string_lossy())
+}
+
+fn parse_singleton_lock(target: &str) -> Option<i32> {
+    target.rsplit_once('-')?.1.parse().ok().filter(|p| *p > 0)
+}
+
 fn read_devtools_port(profile: &Path) -> Option<String> {
     let s = std::fs::read_to_string(profile.join("DevToolsActivePort")).ok()?;
     let mut lines = s.lines();
@@ -89,7 +105,7 @@ impl Backend {
 
     fn launch(&self) -> Result<Instance> {
         let chrome = chrome_path()?;
-        let profile = auth::data_dir().join("chrome-profile");
+        let profile = profile_dir();
         std::fs::create_dir_all(&profile).context("creating Chrome profile directory")?;
 
         // Reuse a Chrome left running with this profile (e.g. after a server restart).
@@ -255,6 +271,14 @@ impl Backend {
             .as_str()
             .context("no session id")?
             .to_string();
+        // Scripts to evaluate on new documents only run while the Page domain is
+        // enabled.
+        inst.cdp.call(
+            "Page.enable",
+            json!({}),
+            Some(&session_id),
+            Duration::from_secs(5),
+        )?;
         // Load the adapter into every document of this window, so it survives
         // reloads and navigations (plugins can restore their page state on load).
         if let Some(adapter) = plugin.file("chrome.js") {
@@ -265,6 +289,13 @@ impl Backend {
                 Duration::from_secs(5),
             )?;
         }
+        // The ducking hook, in every frame (`tvctl duck`).
+        inst.cdp.call(
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({ "source": duck::PAGE_SCRIPT }),
+            Some(&session_id),
+            Duration::from_secs(5),
+        )?;
         let player = Arc::new(ChromePlayer {
             plugin: plugin.clone(),
             target_id,
@@ -344,6 +375,21 @@ impl Backend {
         inst.players.lock().unwrap().remove(id);
         self.players.remove(id);
         Ok(json!({ "id": id, "closed": true }))
+    }
+
+    /// Runs a script in every player page, ignoring failures (e.g. a page that is
+    /// navigating).
+    pub fn run_in_all(&self, script: &str) {
+        let Some(inst) = self.instance.lock().unwrap().clone() else {
+            return;
+        };
+        let players: Vec<Arc<ChromePlayer>> =
+            inst.players.lock().unwrap().values().cloned().collect();
+        for player in players {
+            if let Err(e) = evaluate(&inst, &player, script, Duration::from_secs(2)) {
+                eprintln!("chrome player script failed: {e:#}");
+            }
+        }
     }
 
     /// Evaluates a script in the player page and returns its (awaited) value.
@@ -447,7 +493,7 @@ impl Backend {
             *guard = None;
         }
         let chrome = chrome_path()?;
-        let profile = auth::data_dir().join("chrome-profile");
+        let profile = profile_dir();
         std::fs::create_dir_all(&profile)?;
         wait_profile_unlocked(&profile)?;
         let _ = std::fs::remove_file(profile.join("DevToolsActivePort"));
@@ -773,6 +819,13 @@ mod tests {
         );
         std::fs::write(dir.path().join("DevToolsActivePort"), "9222\n").unwrap();
         assert_eq!(read_devtools_port(dir.path()), None);
+    }
+
+    #[test]
+    fn singleton_lock_pid() {
+        assert_eq!(parse_singleton_lock("my-mac.local-11661"), Some(11661));
+        assert_eq!(parse_singleton_lock("host-0"), None);
+        assert_eq!(parse_singleton_lock("nonsense"), None);
     }
 
     #[test]

@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 use crate::auth;
 use crate::client;
+use crate::duck;
 use crate::plugin::{BackendKind, Plugin, Registry};
 use crate::protocol::{Request, Response};
 
@@ -89,6 +90,29 @@ struct Router {
     idle_timeout: Duration,
     /// Started from an SSH session (see `SSH_SESSION_WARNING`).
     ssh_session: bool,
+    duck: duck::Duck,
+}
+
+impl duck::Host for Router {
+    fn player_count(&self) -> usize {
+        self.players.count()
+    }
+
+    fn run_in_players(&self, script: &str) {
+        if let Err(e) = self.webview.call(
+            webview::Command::RunInAll {
+                script: script.to_string(),
+            },
+            Duration::from_secs(2),
+        ) {
+            eprintln!("duck: webview players: {e}");
+        }
+        self.chrome.run_in_all(script);
+    }
+
+    fn chrome_pid(&self) -> Option<i32> {
+        chrome::browser_pid()
+    }
 }
 
 /// macOS keeps the key that Chrome encrypts cookies with in the login keychain,
@@ -269,6 +293,9 @@ impl Router {
                     .collect();
                 Ok(json!({ "services": statuses? }))
             }
+            Request::Duck { config } => Ok(self.duck.set_config(config)),
+            Request::DuckStatus => Ok(self.duck.status()),
+            Request::DuckApps => Ok(duck::apps(Some(self))),
         }
     }
 
@@ -368,7 +395,10 @@ pub fn run(persistent: bool) -> Result<()> {
         last_request: Mutex::new(Instant::now()),
         idle_timeout: idle_timeout(),
         ssh_session: in_ssh_session(),
+        duck: duck::Duck::new(duck::load()),
     });
+    let duck_host = router.clone();
+    std::thread::spawn(move || duck::run(&duck_host.duck, &*duck_host));
     let monitor = router.clone();
     std::thread::spawn(move || {
         loop {

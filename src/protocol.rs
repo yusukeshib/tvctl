@@ -56,6 +56,13 @@ pub enum Request {
     AuthStatus {
         service: Option<String>,
     },
+    /// Apply ducking settings (already saved by the client); returns the status.
+    Duck {
+        config: crate::duck::Config,
+    },
+    DuckStatus,
+    /// Processes playing audio now.
+    DuckApps,
 }
 
 /// Actions executed by the plugin adapter (forwarded to JavaScript as-is).
@@ -234,6 +241,15 @@ mod tests {
                 site: Some("jp".into()),
             },
             Request::AuthStatus { service: None },
+            Request::Duck {
+                config: crate::duck::Config {
+                    enabled: true,
+                    level: 10,
+                    apps: Some(vec!["ChatGPT".into()]),
+                },
+            },
+            Request::DuckStatus,
+            Request::DuckApps,
             Request::Window {
                 id: "1".into(),
                 opts: WindowOpts {

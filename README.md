@@ -68,6 +68,10 @@ tvctl auth login crunchyroll
 tvctl auth status
 tvctl plugins                        # services, domains, supported actions
 tvctl plugins netflix                # one service: URL examples, login, notes
+
+tvctl duck on                        # lower players to 10% while other audio plays
+tvctl duck on --apps ChatGPT --level 20   # only while ChatGPT plays, to 20%
+tvctl duck status / tvctl duck apps / tvctl duck off
 ```
 
 The background server starts on demand (`open`, `auth`) and stops a few seconds
@@ -79,6 +83,29 @@ closes all players; `tvctl server status` shows its state.
 `--size` is the video area; layouts without `--size` fill their screen region.
 `tvctl --help` describes the workflow, the JSON output and error format, and
 examples; `tvctl <command> --help` describes each argument.
+
+## Ducking
+
+`tvctl duck on` lowers every player while other audio plays (for example a
+voice assistant speaking) and restores it when that audio has been silent for
+a moment. "Other audio" is every app except tvctl's own players, or only the
+apps given with `--apps` (app names such as `ChatGPT`, process names, or bundle
+ids; `tvctl duck apps` lists what is playing now). `--level` is the volume
+while lowered, in percent of each player's own volume (default 10). The
+setting is saved (`duck.json` in the data directory) and applies whenever
+players are open; `tvctl duck off` turns it off.
+
+- Nothing is rerouted: tvctl measures the other apps' audio with a Core Audio
+  process tap (macOS 14.2+), which only copies it. The first time, macOS asks
+  for permission to record system audio, on behalf of the app that started
+  tvctl (e.g. the terminal); allow it under System Settings > Privacy &
+  Security > Screen & System Audio Recording.
+- The volume is lowered inside the player pages, so it works for every
+  service, and `volume`/`status` keep showing the player's own volume.
+  (Sound a page plays through Web Audio instead of media elements is not
+  lowered.)
+- `tvctl duck status` shows `ducking` (lowered now), `peak_db` (level of the
+  monitored audio), `sources` (monitored apps playing now) and `error`.
 
 ## Backends
 

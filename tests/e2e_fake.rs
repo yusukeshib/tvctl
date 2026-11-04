@@ -582,6 +582,86 @@ fn undeclared_actions_are_refused() {
 }
 
 #[test]
+fn duck_settings_are_saved_without_a_server() {
+    let env = Env::new();
+    let s = env.ok(&["duck", "status"]);
+    assert_eq!(s["enabled"], false, "{s}");
+    assert_eq!(s["server_running"], false, "{s}");
+    let s = env.ok(&["duck", "on", "--level", "20", "--apps", "ChatGPT,zoom.us"]);
+    assert_eq!(s["enabled"], true, "{s}");
+    let s = env.ok(&["duck", "status"]);
+    assert_eq!(s["level"], 20, "{s}");
+    assert_eq!(s["apps"], json!(["ChatGPT", "zoom.us"]), "{s}");
+    // `off` keeps the other settings for the next `on`.
+    let s = env.ok(&["duck", "off"]);
+    assert_eq!(s["enabled"], false, "{s}");
+    assert_eq!(s["level"], 20, "{s}");
+    assert!(env.ok(&["duck", "apps"])["apps"].is_array());
+    assert!(env.err(&["duck", "on", "--level", "101"]).contains("101"));
+}
+
+/// The ducking hook lowers what a page plays without changing the volume the
+/// page sees. (The audio tap itself needs a person to grant a permission, so it
+/// is not tested here.)
+#[test]
+#[ignore = "opens windows; run with --ignored"]
+fn duck_hook_scales_media_volume_invisibly() {
+    let env = Env::new();
+    env.up();
+    assert_eq!(env.ok(&["duck", "status"])["server_running"], true);
+    let c = open(&env, "chrome", &[]);
+    let id = c["id"].as_str().unwrap();
+    // Reload so the page starts with the hook installed before its own scripts.
+    env.ok(&["__eval", id, "setTimeout(() => location.reload(), 0), 1"]);
+    eventually("the hook after reload", Duration::from_secs(10), || {
+        env.run(&["__eval", id, "typeof window.__tvctlDuck"]) == Ok(json!("object"))
+    });
+    let script = r#"(() => {
+      const a = document.createElement("audio");
+      document.body.appendChild(a);
+      a.volume = 0.5;
+      const d = window.__tvctlDuck;
+      const r = [];
+      d.set(0.1, 0);
+      r.push(a.volume, d.actual(a));
+      a.volume = 0.8;
+      r.push(a.volume, d.actual(a));
+      const b = new Audio();
+      b.volume = 0.6;
+      r.push(b.volume, d.actual(b));
+      d.set(1, 0);
+      r.push(a.volume, d.actual(a), d.actual(b));
+      let error = null;
+      try { a.volume = 2; } catch (e) { error = e.name; }
+      r.push(error);
+      return r.map((x) => typeof x === "number" ? Math.round(x * 1000) / 1000 : x);
+    })()"#;
+    assert_eq!(
+        env.ok(&["__eval", id, script]),
+        json!([
+            0.5,
+            0.05,
+            0.8,
+            0.08,
+            0.6,
+            0.06,
+            0.8,
+            0.8,
+            0.6,
+            "IndexSizeError"
+        ])
+    );
+    // A fade ends at the target.
+    let faded = r#"(async () => {
+      const a = document.querySelector("audio");
+      window.__tvctlDuck.set(0.25, 200);
+      await new Promise((r) => setTimeout(r, 500));
+      return [a.volume, Math.round(window.__tvctlDuck.actual(a) * 1000) / 1000];
+    })()"#;
+    assert_eq!(env.ok(&["__eval", id, faded]), json!([0.8, 0.2]));
+}
+
+#[test]
 #[ignore = "opens windows; run with --ignored"]
 fn eval_is_chrome_only() {
     let env = Env::new();

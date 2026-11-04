@@ -24,6 +24,7 @@ use wry::{WebView, WebViewBuilder};
 
 use super::{Players, Reply};
 use crate::client;
+use crate::duck;
 use crate::layout::{self, Rect};
 use crate::plugin::{Plugin, Registry};
 use crate::protocol::{Switch, WindowOpts};
@@ -71,6 +72,10 @@ pub enum Command {
     Screenshot {
         id: String,
         path: String,
+    },
+    /// Runs a script in the main frame of every player page that has loaded.
+    RunInAll {
+        script: String,
     },
     List,
     Shutdown,
@@ -323,6 +328,14 @@ impl State {
                     let _ = reply.send(capture_window(window_number, &id, &path));
                 });
             }
+            Command::RunInAll { script } => {
+                let mut count = 0;
+                for player in self.players.values().filter(|p| p.page_ready) {
+                    run_script(player, &script);
+                    count += 1;
+                }
+                let _ = reply.send(Ok(json!({ "players": count })));
+            }
             Command::Close { id } => {
                 if self.players.contains_key(&id) {
                     self.close_player(&id);
@@ -359,6 +372,8 @@ impl State {
             .with_autoplay(true)
             .with_background_color((0, 0, 0, 255))
             .with_initialization_script(HOST_BRIDGE)
+            // The ducking hook, in every frame (`tvctl duck`).
+            .with_initialization_script_for_main_only(duck::PAGE_SCRIPT, false)
             .with_ipc_handler(move |req| {
                 let _ = proxy.send_event(UserEvent::Ipc {
                     player: ipc_id.clone(),

@@ -1,6 +1,6 @@
 ---
 name: tvctl
-description: Play and control videos and music from streaming services (YouTube, Netflix, Spotify and more; `tvctl --help` lists them) in windows on the user's Mac with the tvctl CLI (open a URL, play/pause, seek, skip, next episode, subtitles incl. Japanese, audio track, volume, speed, quality, window size/position/layout/fullscreen, screenshots). Use when the user asks to play, watch, listen to, or control a video, show, movie or song on their screen.
+description: Play and control videos and music from streaming services (YouTube, Netflix, Spotify and more; `tvctl --help` lists them) in windows on the user's Mac with the tvctl CLI (open a URL, play/pause, seek, skip, next episode, subtitles incl. Japanese, audio track, volume, speed, quality, window size/position/layout/fullscreen, screenshots, lowering players while other audio such as a voice assistant plays). Use when the user asks to play, watch, listen to, or control a video, show, movie or song on their screen.
 ---
 
 # tvctl
@@ -63,6 +63,7 @@ player closes. Quote URLs (`'...'`): `?` and `&` break in shells such as zsh.
 | Subtitles | `tvctl subtitles <ID> ja`, `on`, `off`, `list` |
 | Audio track | `tvctl audio <ID> list`, `tvctl audio <ID> ja` |
 | Volume | `tvctl volume <ID> 40`, `tvctl mute <ID>`, `tvctl unmute <ID>` |
+| Lower players while other audio plays | `tvctl duck on` (all other apps) or `tvctl duck on --apps ChatGPT --level 20`; `tvctl duck off`, `tvctl duck status`, `tvctl duck apps` (what plays now) |
 | Speed | `tvctl speed <ID> 1.5` |
 | Quality | `tvctl quality <ID> <value>` (values: `available_qualities` in status) |
 | Window | `tvctl window <ID> --size 1280x720 --position 100,50` |
@@ -108,5 +109,10 @@ Chrome profile, not the user's everyday browser.
   the tvctl server was started over SSH, where Chrome cannot use the macOS
   keychain, so logins are not saved or loaded. Run `tvctl server down` and ask
   the user to run tvctl from a terminal on the Mac's own screen.
+- `tvctl duck status` shows `"monitoring": true` but players are never lowered
+  (`peak_db` stays null while other audio plays): macOS has not granted system
+  audio recording. Ask the user to allow the app that runs tvctl (e.g. the
+  terminal) under System Settings > Privacy & Security > Screen & System Audio
+  Recording.
 - Unexpected behavior: run `cargo install tvctl` to update, then retry.
 - Server log: `$TMPDIR/tvctl.log`.

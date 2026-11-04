@@ -25,8 +25,12 @@ url = "2.5.8"
 wry = "0.57.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSGeometry"] }
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware", "objc2", "objc2-foundation", "objc2-core-audio-types"] }
+objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString", "CFDictionary"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSBundle", "NSDictionary", "NSGeometry", "NSString", "NSUUID", "NSValue"] }
 objc2-app-kit = { version = "0.3", features = ["NSScreen", "NSWindow", "NSResponder", "NSView"] }
 
 [dev-dependencies]
