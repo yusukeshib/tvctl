@@ -1,0 +1,97 @@
+name: Release
+
+# Releases when the version in Cargo.toml changes on main (or on demand):
+# publishes the crate to crates.io, then tags v<version> and creates a GitHub
+# release with the agent packages (dist/tvctl-plugin.zip, dist/tvctl-skill.zip).
+# A version whose tag already exists is skipped.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check-version:
+    name: Check version
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          PLUGIN_VERSION=$(sed -n 's/.*"version": "\(.*\)".*/\1/p' plugin/plugin.json | head -1)
+          if [ "$VERSION" != "$PLUGIN_VERSION" ]; then
+            echo "::error::plugin/plugin.json version $PLUGIN_VERSION != Cargo.toml version $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if the tag exists
+        id: check
+        run: |
+          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "Tag v${{ steps.version.outputs.version }} exists; skipping the release"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    name: Publish to crates.io
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    # tvctl is macOS-only; `cargo publish` builds the package to verify it.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  release:
+    name: Tag and create the GitHub release
+    needs: [check-version, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build the agent packages
+        run: sh scripts/package-skill.sh
+
+      - name: Create the tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ needs.check-version.outputs.tag }}" -m "Release ${{ needs.check-version.outputs.tag }}"
+          git push origin "${{ needs.check-version.outputs.tag }}"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check-version.outputs.tag }}
+          files: |
+            dist/tvctl-plugin.zip
+            dist/tvctl-skill.zip
+          generate_release_notes: true
+          prerelease: ${{ contains(needs.check-version.outputs.version, '-') }}

@@ -237,6 +237,15 @@ TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl" \
 ```
 
 The end-to-end tests open windows. `e2e_fake` uses a fake plugin and a local site.
+
+## Releasing
+
+Bump `version` in `Cargo.toml` and `plugin/plugin.json` (they must match) and
+push to `main`. `.github/workflows/release.yml` then publishes the crate to
+crates.io, tags `v<version>` and creates a GitHub release with
+`dist/tvctl-plugin.zip` and `dist/tvctl-skill.zip`. Versions that already have
+a tag are skipped; the workflow can also be started by hand (`workflow_dispatch`).
+It needs the `CARGO_REGISTRY_TOKEN` repository secret.
 `e2e_youtube` uses a fresh logged-out profile, so ads may play and the tests
 wait for them. To use your logged-in profile instead, set
 `TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl"`.
