@@ -478,6 +478,12 @@ mod tests {
         ] {
             assert_eq!(r.for_url(u).unwrap().0.name(), "netflix", "{u}");
         }
+        for u in [
+            "https://www.crunchyroll.com/watch/G0DUND0K2/the-journeys-end",
+            "crunchyroll.com/ja/series/GG5H5XQX4",
+        ] {
+            assert_eq!(r.for_url(u).unwrap().0.name(), "crunchyroll", "{u}");
+        }
         assert!(r.for_url("https://example.com/").is_err());
         assert!(r.for_url("https://notyoutube.com/").is_err());
         assert!(r.for_url("file:///etc/passwd").is_err());
@@ -703,6 +709,15 @@ mod tests {
             let want = !matches!(*a, "previous" | "quality");
             assert_eq!(nf.supports(a, BackendKind::Chrome), want, "netflix {a}");
         }
+        let cr = &r.get("crunchyroll").unwrap().manifest;
+        assert_eq!(cr.backends, [BackendKind::Chrome]);
+        for a in ACTIONS {
+            assert_eq!(
+                cr.supports(a, BackendKind::Chrome),
+                *a != "previous",
+                "crunchyroll {a}"
+            );
+        }
     }
 
     #[test]
@@ -727,7 +742,7 @@ mod tests {
         assert!(yt["login"].get("sites").is_none());
         let e = r.describe("hulu").unwrap_err().to_string();
         assert!(
-            e.contains("no plugin named \"hulu\" (plugins: netflix, primevideo, spotify, youtube)"),
+            e.contains("no plugin named \"hulu\" (plugins: crunchyroll, netflix, primevideo, spotify, youtube)"),
             "{e}"
         );
         let help = r.help_section();

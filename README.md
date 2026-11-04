@@ -6,7 +6,8 @@ screen. (It does not control physical TVs.) Every command prints JSON to
 stdout; errors go to stderr with exit code 1.
 
 Services are plugins (`tvctl plugins` lists them). Currently: YouTube,
-Spotify (web player), Netflix and Amazon Prime Video (amazon.com and amazon.co.jp).
+Spotify (web player), Netflix, Amazon Prime Video (amazon.com and amazon.co.jp)
+and Crunchyroll.
 macOS only for now.
 
 ## Install
@@ -63,6 +64,7 @@ tvctl auth login spotify
 tvctl auth login primevideo             # amazon.com (US)
 tvctl auth login primevideo --site jp   # amazon.co.jp (a separate account)
 tvctl auth login netflix
+tvctl auth login crunchyroll
 tvctl auth status
 tvctl plugins                        # services, domains, supported actions
 tvctl plugins netflix                # one service: URL examples, login, notes
@@ -112,6 +114,7 @@ quit that Chrome with Cmd+Q; tvctl then checks the login cookies.
 | `spotify` | chrome | required | play, pause, toggle, next, previous, seek, volume, mute |
 | `netflix` | chrome | required | all except previous, quality |
 | `primevideo` | chrome | required (amazon.com and/or amazon.co.jp account with Prime Video) | all except previous |
+| `crunchyroll` | chrome | required (most titles need Premium) | all except previous |
 
 Spotify links: tracks, albums, playlists, artists and episodes on
 `open.spotify.com`. A track link plays that track; other pages start from the top.
@@ -147,6 +150,24 @@ refused, and `--start`/`--subtitles` of `open` are applied when it ends
 cannot play reports the player's message (e.g. "Maximum Streams Playing") as an
 error. The plugin uses the web player's internal stores (no public API), so
 Prime Video changes can break it; the E2E tests detect that.
+
+Crunchyroll links: `crunchyroll.com/watch/<id>/<slug>` (an episode or movie)
+and `crunchyroll.com/series/<id>/<slug>` (plays like the series page's
+Start/Continue button). An episode resumes where it was left unless `--start`
+is given. The player fills the window; the rest of the watch page is hidden.
+Status includes `episode` {id, title, number} and `next_episode`; `next`
+switches to it in place. Subtitles are burned into the video (switching reloads
+the stream for a moment), and each dub is its own episode id, so `audio <lang>`
+changes `video_id` and the URL. Subtitle and audio choices become the profile's
+preferences, as in the site's menus. Speeds are the menu's 0.5, 0.75 and 1;
+qualities are `highest`, `moderate` (720p) and `data_saver` (480p). Tested with
+Premium; on ad-supported plans `ad_showing` reports ads (untested). Crunchyroll's
+Cloudflare bot check ("Verify you are human") can block tvctl's Chrome, mostly
+after many page loads in a short time; `open` then says so. Pass the check in
+the plain Chrome of `tvctl auth login crunchyroll` (open any episode there),
+quit it, and retry. The plugin drives the web player's internal player object
+(reached through its React controls), so site changes can break it; the E2E
+tests detect that.
 
 ## Plugins
 
@@ -211,6 +232,8 @@ TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl" \
   cargo test --test e2e_primevideo -- --ignored --test-threads=1  # real Prime Video (needs login)
 TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl" \
   cargo test --test e2e_netflix -- --ignored --test-threads=1  # real Netflix (needs login)
+TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl" \
+  cargo test --test e2e_crunchyroll -- --ignored --test-threads=1  # real Crunchyroll (needs login)
 ```
 
 The end-to-end tests open windows. `e2e_fake` uses a fake plugin and a local site.

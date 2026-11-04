@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "tvctl",
   "version": "0.5.0",
-  "description": "Play YouTube videos, Spotify music, Netflix and Prime Video titles in windows on your Mac and control them (playback, seek, subtitles, volume, quality, window layout, screenshots) with the tvctl CLI. Installs and updates tvctl with cargo.",
+  "description": "Play YouTube videos, Spotify music, Netflix, Prime Video and Crunchyroll titles in windows on your Mac and control them (playback, seek, subtitles, volume, quality, window layout, screenshots) with the tvctl CLI. Installs and updates tvctl with cargo.",
   "author": {
     "name": "Yusuke Shibata",
     "email": "yusukeshib@gmail.com",
@@ -11,13 +11,13 @@
   "homepage": "https://github.com/yusukeshib/tvctl",
   "repository": "https://github.com/yusukeshib/tvctl",
   "license": "MIT",
-  "keywords": ["youtube", "spotify", "netflix", "prime video", "video", "music", "player", "macos", "cli"],
+  "keywords": ["youtube", "spotify", "netflix", "prime video", "crunchyroll", "video", "music", "player", "macos", "cli"],
   "extensions": {
     "com.openai": {
       "interface": {
         "displayName": "tvctl",
         "shortDescription": "Play and control videos and music on your Mac",
-        "longDescription": "tvctl opens YouTube videos, Spotify music, Netflix and Amazon Prime Video titles in windows on your Mac and lets the assistant control them: play, pause, seek, skip, Japanese subtitles, audio tracks, volume, speed, quality, window size and layout, fullscreen, and screenshots. The skill installs or updates the tvctl command with cargo before use. Requires a Mac where the assistant can run local commands.",
+        "longDescription": "tvctl opens YouTube videos, Spotify music, Netflix, Amazon Prime Video and Crunchyroll titles in windows on your Mac and lets the assistant control them: play, pause, seek, skip, Japanese subtitles, audio tracks, volume, speed, quality, window size and layout, fullscreen, and screenshots. The skill installs or updates the tvctl command with cargo before use. Requires a Mac where the assistant can run local commands.",
         "developerName": "Yusuke Shibata",
         "category": "Productivity",
         "capabilities": ["Play videos and music", "Control playback", "Subtitles", "Window layout", "Screenshots"],

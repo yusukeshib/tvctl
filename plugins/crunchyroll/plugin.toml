@@ -1,0 +1,26 @@
+name = "crunchyroll"
+description = "Crunchyroll (crunchyroll.com/watch and /series pages)"
+domains = ["crunchyroll.com"]
+# Playback needs a login and DRM, so only the Chrome backend works.
+backends = ["chrome"]
+actions = ["play", "pause", "toggle", "next", "seek", "subtitles", "audio", "volume", "speed", "quality"]
+examples = ["https://www.crunchyroll.com/watch/G0DUND0K2/the-journeys-end", "https://www.crunchyroll.com/series/GG5H5XQX4/frieren-beyond-journeys-end"]
+notes = [
+  "Needs a Crunchyroll login (`tvctl auth login crunchyroll`); most titles need Premium. Which titles exist depends on the country you are in.",
+  "URLs: `/watch/<id>/<slug>` plays that episode or movie; `/series/<id>/<slug>` plays the episode the series page's Start/Continue button would. Find titles with `https://www.crunchyroll.com/search?q=...`.",
+  "An episode resumes where it was left unless `--start` is given. The player fills the window (the rest of the watch page is hidden).",
+  "Status has `episode` {id, title, number} and `next_episode` {id, title, number}; `next` switches to the next episode in place. There is no `previous`.",
+  "Subtitles are burned into the video, so switching them reloads the stream for a moment. `subtitles on` picks the profile's display language, else English.",
+  "Each dub is its own episode id: `audio <lang>` switches to that dub in place and changes `video_id` and the URL. Subtitle and audio choices become the Crunchyroll profile's preferences, as in the site's own menus.",
+  "Speeds: 0.5, 0.75, 1 (Crunchyroll's menu). Quality values: highest, moderate (up to 720p), data_saver (up to 480p).",
+  "Tested with Premium (no ads). On ad-supported plans `ad_showing` reports ads; they are not skipped.",
+  "Crunchyroll's Cloudflare bot check (\"Verify you are human\") can block tvctl's Chrome, often after many page loads in a short time; then `open` says so. Pass the check in `tvctl auth login crunchyroll` (a plain Chrome): open any episode there, pass it, quit that Chrome, and retry.",
+  "Video is DRM-protected: it can look black in `screenshot` and through screen sharing while it plays normally on the Mac's own display.",
+]
+
+[auth]
+required = true
+login_url = "https://sso.crunchyroll.com/login"
+cookie_url = "https://www.crunchyroll.com"
+# The refresh-token cookie is set by a login only (not for anonymous visitors).
+logged_in_cookies = ["etp_rt"]

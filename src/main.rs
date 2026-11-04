@@ -59,7 +59,7 @@ Examples:
   tvctl subtitles 1 ja            # Japanese subtitles (auto-translated if needed)
   tvctl window 1 --layout left    # snap to the left half of the screen
   tvctl screenshot 1 /tmp/now.png # see what the window shows
-  tvctl auth login youtube        # one-time login (needed for Spotify, Netflix, Prime Video)";
+  tvctl auth login youtube        # one-time login (needed for Spotify, Netflix, Prime Video, Crunchyroll)";
 
 const ID: &str = "Player id, from the output of `open` or `list`";
 
@@ -80,7 +80,7 @@ enum Cmd {
         /// Video or music URL of a supported service, e.g. a YouTube watch/youtu.be/shorts
         /// URL, an open.spotify.com track/album/playlist URL, a netflix.com
         /// /watch or /title URL, or an amazon.com / amazon.co.jp /gp/video/detail
-        /// (Prime Video) URL.
+        /// (Prime Video) URL, or a crunchyroll.com /watch or /series URL.
         url: String,
         /// Use this backend instead of choosing automatically. `webview`: native
         /// window, no login. `chrome`: tvctl's Chrome profile (logins, DRM).
@@ -292,9 +292,9 @@ enum AuthCmd {
     /// Sign in, then quit that Chrome (Cmd+Q). Prints `{"service", "logged_in"}`
     /// (plus `sites` with each site's state for services with several sites).
     /// Needs a person at the screen. Logged in, YouTube plays in Chrome (no ads with
-    /// Premium); Spotify, Netflix and Prime Video require a login.
+    /// Premium); Spotify, Netflix, Prime Video and Crunchyroll require a login.
     Login {
-        /// Plugin name, e.g. youtube, spotify, netflix, primevideo.
+        /// Plugin name, e.g. youtube, spotify, netflix, primevideo, crunchyroll.
         service: String,
         /// For services with several sites (`auth.sites` in `tvctl plugins`), the
         /// site to sign in to, e.g. `jp` for primevideo on amazon.co.jp. Default:
