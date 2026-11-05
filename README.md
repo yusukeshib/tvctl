@@ -110,7 +110,7 @@ players are open; `tvctl duck off` turns it off.
 ## Casting from the YouTube app
 
 `tvctl cast on` makes this Mac a YouTube cast target: phones and computers on
-the same network list it (as `tvctl`, or `--name`) in the YouTube app's Cast
+the same network list it (as `tvctl (<computer name>)`, or `--name`) in the YouTube app's Cast
 menu. A cast video opens in a tvctl player (Chrome when you are logged in, so
 Premium plays without ads); play, pause, seek, volume and the queue
 (next/previous, the next video when one ends) are controlled from the app, and

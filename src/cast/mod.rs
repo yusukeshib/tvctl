@@ -17,24 +17,63 @@ use serde_json::{Value, json};
 use crate::auth;
 use crate::protocol::{PlayerAction, WindowOpts};
 
-pub const DEFAULT_NAME: &str = "tvctl";
+/// Name used before names included the computer's name.
+const OLD_DEFAULT_NAME: &str = "tvctl";
 
-/// Saved settings (`cast.json` in the data dir).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// The computer's name (System Settings > General > Sharing), if known.
+fn computer_name() -> Option<String> {
+    let out = std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()?;
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !name.is_empty()).then_some(name)
+}
+
+fn name_for(computer: Option<&str>) -> String {
+    match computer {
+        Some(c) => format!("tvctl ({c})"),
+        None => OLD_DEFAULT_NAME.to_string(),
+    }
+}
+
+/// Default name in the Cast menu: `tvctl (<computer name>)`, so several Macs
+/// can be told apart.
+pub fn default_name() -> String {
+    name_for(computer_name().as_deref())
+}
+
+/// The name the receiver uses for `config` (old or missing names get the default).
+fn effective_name(config: &Config) -> String {
+    if config.name.is_empty() || config.name == OLD_DEFAULT_NAME {
+        default_name()
+    } else {
+        config.name.clone()
+    }
+}
+
+/// The name for `cast on` without `--name`: the saved one if it was chosen,
+/// else the default.
+pub fn name_or_saved(name: Option<String>) -> String {
+    if let Some(n) = name {
+        return n;
+    }
+    let saved = load().name;
+    if saved.is_empty() || saved == OLD_DEFAULT_NAME {
+        default_name()
+    } else {
+        saved
+    }
+}
+
+/// Saved settings (`cast.json` in the data dir). An empty name means the default.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     pub enabled: bool,
     /// Name shown in the YouTube app's Cast menu.
     pub name: String,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            enabled: false,
-            name: DEFAULT_NAME.to_string(),
-        }
-    }
-}
 
 fn config_path(dir: &Path) -> PathBuf {
     dir.join("cast.json")
@@ -234,7 +273,10 @@ pub fn run(cast: &Cast, host: &dyn Host) {
                 inner = cast.wake.wait(inner).unwrap();
             }
             inner.changed = false;
-            inner.config.clone()
+            let mut c = inner.config.clone();
+            c.name = effective_name(&c);
+            inner.config.name = c.name.clone();
+            c
         };
         let stop = || cast.inner.lock().unwrap().changed;
         if let Err(e) = receiver::run(&config, &dir, cast, host, &stop) {
@@ -270,6 +312,13 @@ mod tests {
         };
         save_in(dir.path(), &c).unwrap();
         assert_eq!(load_from(dir.path()), c);
+    }
+
+    #[test]
+    fn default_names() {
+        assert_eq!(name_for(Some("Studio")), "tvctl (Studio)");
+        assert_eq!(name_for(None), "tvctl");
+        assert!(default_name().starts_with("tvctl"));
     }
 
     #[test]

@@ -63,7 +63,7 @@ player closes. Quote URLs (`'...'`): `?` and `&` break in shells such as zsh.
 | Subtitles | `tvctl subtitles <ID> ja`, `on`, `off`, `list` |
 | Audio track | `tvctl audio <ID> list`, `tvctl audio <ID> ja` |
 | Volume | `tvctl volume <ID> 40`, `tvctl mute <ID>`, `tvctl unmute <ID>` |
-| Let phones cast YouTube to this Mac | `tvctl cast on` (shows up as `tvctl` in the YouTube app's Cast menu), `tvctl cast status`, `tvctl cast code` (for "Link with TV code"), `tvctl cast off` |
+| Let phones cast YouTube to this Mac | `tvctl cast on` (shows up as `tvctl (<computer name>)` in the YouTube app's Cast menu; `--name` to change), `tvctl cast status`, `tvctl cast code` (for "Link with TV code"), `tvctl cast off` |
 | Lower players while other audio plays | `tvctl duck on` (all other apps) or `tvctl duck on --apps ChatGPT --level 20`; `tvctl duck off`, `tvctl duck status`, `tvctl duck apps` (what plays now) |
 | Speed | `tvctl speed <ID> 1.5` |
 | Quality | `tvctl quality <ID> <value>` (values: `available_qualities` in status) |

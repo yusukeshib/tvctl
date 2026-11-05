@@ -339,9 +339,10 @@ enum CastCmd {
     /// queue (next/previous) are controlled from the app. YouTube only (not
     /// YouTube Music). Uses YouTube's unpublished TV (Lounge) API.
     On {
-        /// Name shown in the Cast menu.
-        #[arg(long, default_value = cast::DEFAULT_NAME)]
-        name: String,
+        /// Name shown in the Cast menu. Default: the saved name, or
+        /// "tvctl (<computer name>)".
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Turn the cast receiver off.
     Off,
@@ -442,7 +443,7 @@ fn plan(cmd: Cmd) -> Result<Plan> {
         Cmd::Cast { action } => {
             return Ok(match action {
                 CastCmd::On { name } => {
-                    let name = name.trim().to_string();
+                    let name = cast::name_or_saved(name).trim().to_string();
                     if name.is_empty() {
                         return Err(anyhow!("--name must not be empty"));
                     }
