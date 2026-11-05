@@ -1,5 +1,6 @@
 mod auth;
 mod blackout;
+mod cast;
 mod cdp;
 mod client;
 mod duck;
@@ -260,6 +261,12 @@ enum Cmd {
         #[command(subcommand)]
         action: DuckCmd,
     },
+    /// Let the YouTube app on phones and computers cast to this Mac: it appears
+    /// in the app's Cast menu, and what is cast plays in a tvctl player.
+    Cast {
+        #[command(subcommand)]
+        action: CastCmd,
+    },
     /// List the supported services (plugins), or show one: URL domains and
     /// examples, supported commands, login, and notes on its limits and values.
     Plugins {
@@ -321,6 +328,29 @@ enum DuckCmd {
     Status,
     /// List the processes playing audio now, with the names usable in `--apps`.
     Apps,
+}
+
+#[derive(Subcommand)]
+enum CastCmd {
+    /// Turn the cast receiver on (saved; the server keeps running while it is on).
+    ///
+    /// Devices on the same network then list this Mac in the YouTube app's Cast
+    /// menu. Casting opens a player window; play, pause, seek, volume and the
+    /// queue (next/previous) are controlled from the app. YouTube only (not
+    /// YouTube Music). Uses YouTube's unpublished TV (Lounge) API.
+    On {
+        /// Name shown in the Cast menu.
+        #[arg(long, default_value = cast::DEFAULT_NAME)]
+        name: String,
+    },
+    /// Turn the cast receiver off.
+    Off,
+    /// Show whether the receiver runs, connected devices (`senders`) and the
+    /// player and video being cast.
+    Status,
+    /// Get a code for the YouTube app's "Link with TV code" (Settings > Watch on
+    /// TV), for devices that do not find this Mac on their own.
+    Code,
 }
 
 #[derive(Subcommand)]
@@ -392,6 +422,9 @@ enum Plan {
     DuckSet(duck::Config),
     DuckStatus,
     DuckApps,
+    CastSet(cast::Config),
+    CastStatus,
+    CastCode,
     Remote(Request),
 }
 
@@ -406,6 +439,26 @@ fn plan(cmd: Cmd) -> Result<Plan> {
             });
         }
         Cmd::Plugins { name } => return Ok(Plan::Plugins(name)),
+        Cmd::Cast { action } => {
+            return Ok(match action {
+                CastCmd::On { name } => {
+                    let name = name.trim().to_string();
+                    if name.is_empty() {
+                        return Err(anyhow!("--name must not be empty"));
+                    }
+                    Plan::CastSet(cast::Config {
+                        enabled: true,
+                        name,
+                    })
+                }
+                CastCmd::Off => Plan::CastSet(cast::Config {
+                    enabled: false,
+                    ..cast::load()
+                }),
+                CastCmd::Status => Plan::CastStatus,
+                CastCmd::Code => Plan::CastCode,
+            });
+        }
         Cmd::Duck { action } => {
             return Ok(match action {
                 DuckCmd::On { level, apps } => {
@@ -554,6 +607,9 @@ fn run(cmd: Cmd) -> Result<Value> {
         Plan::DuckSet(config) => client::duck_set(config),
         Plan::DuckStatus => client::duck_status(),
         Plan::DuckApps => client::duck_apps(),
+        Plan::CastSet(config) => client::cast_set(config),
+        Plan::CastStatus => client::cast_status(),
+        Plan::CastCode => client::cast_code(),
         Plan::Plugins(name) => {
             let registry = plugin::Registry::load()?;
             match name {

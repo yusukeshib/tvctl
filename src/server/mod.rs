@@ -15,10 +15,11 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use crate::auth;
+use crate::cast;
 use crate::client;
 use crate::duck;
 use crate::plugin::{BackendKind, Plugin, Registry};
-use crate::protocol::{Request, Response};
+use crate::protocol::{PlayerAction, Request, Response, WindowOpts};
 
 pub type Reply = std::sync::mpsc::Sender<Result<Value, String>>;
 
@@ -91,6 +92,31 @@ struct Router {
     /// Started from an SSH session (see `SSH_SESSION_WARNING`).
     ssh_session: bool,
     duck: duck::Duck,
+    cast: cast::Cast,
+}
+
+impl cast::Host for Router {
+    fn open(&self, url: &str, start: f64, window: WindowOpts) -> Result<Value, String> {
+        self.handle(Request::Open {
+            url: url.to_string(),
+            start: Some(start),
+            paused: false,
+            subtitles: None,
+            window,
+            backend: None,
+        })
+    }
+
+    fn player(&self, id: &str, action: PlayerAction) -> Result<Value, String> {
+        self.handle(Request::Player {
+            id: id.to_string(),
+            action,
+        })
+    }
+
+    fn close(&self, id: &str) -> Result<Value, String> {
+        self.handle(Request::Close { id: id.to_string() })
+    }
 }
 
 impl duck::Host for Router {
@@ -296,6 +322,9 @@ impl Router {
             Request::Duck { config } => Ok(self.duck.set_config(config)),
             Request::DuckStatus => Ok(self.duck.status()),
             Request::DuckApps => Ok(duck::apps(Some(self))),
+            Request::Cast { config } => Ok(self.cast.set_config(config)),
+            Request::CastStatus => Ok(self.cast.status()),
+            Request::CastCode => self.cast.tv_code(),
         }
     }
 
@@ -315,6 +344,7 @@ impl Router {
     /// the idle timeout.
     fn is_idle(&self) -> bool {
         if self.persistent.load(Ordering::SeqCst)
+            || self.cast.enabled()
             || self.busy.load(Ordering::SeqCst) > 0
             || self.players.count() > 0
         {
@@ -396,9 +426,12 @@ pub fn run(persistent: bool) -> Result<()> {
         idle_timeout: idle_timeout(),
         ssh_session: in_ssh_session(),
         duck: duck::Duck::new(duck::load()),
+        cast: cast::Cast::new(cast::load()),
     });
     let duck_host = router.clone();
     std::thread::spawn(move || duck::run(&duck_host.duck, &*duck_host));
+    let cast_host = router.clone();
+    std::thread::spawn(move || cast::run(&cast_host.cast, &*cast_host));
     let monitor = router.clone();
     std::thread::spawn(move || {
         loop {

@@ -63,6 +63,13 @@ pub enum Request {
     DuckStatus,
     /// Processes playing audio now.
     DuckApps,
+    /// Apply cast settings (already saved by the client); returns the status.
+    Cast {
+        config: crate::cast::Config,
+    },
+    CastStatus,
+    /// A code for the YouTube app's "Link with TV code".
+    CastCode,
 }
 
 /// Actions executed by the plugin adapter (forwarded to JavaScript as-is).
@@ -250,6 +257,14 @@ mod tests {
             },
             Request::DuckStatus,
             Request::DuckApps,
+            Request::Cast {
+                config: crate::cast::Config {
+                    enabled: true,
+                    name: "tv".into(),
+                },
+            },
+            Request::CastStatus,
+            Request::CastCode,
             Request::Window {
                 id: "1".into(),
                 opts: WindowOpts {

@@ -107,6 +107,39 @@ players are open; `tvctl duck off` turns it off.
 - `tvctl duck status` shows `ducking` (lowered now), `peak_db` (level of the
   monitored audio), `sources` (monitored apps playing now) and `error`.
 
+## Casting from the YouTube app
+
+`tvctl cast on` makes this Mac a YouTube cast target: phones and computers on
+the same network list it (as `tvctl`, or `--name`) in the YouTube app's Cast
+menu. A cast video opens in a tvctl player (Chrome when you are logged in, so
+Premium plays without ads); play, pause, seek, volume and the queue
+(next/previous, the next video when one ends) are controlled from the app, and
+the app shows the player's state. A new video replaces the cast window at the
+same place and size; tapping Disconnect in the app closes it.
+
+```sh
+tvctl cast on               # saved; the server keeps running while it is on
+tvctl cast on --name "Living room"
+tvctl cast status           # running, connected devices (senders), player, video
+tvctl cast code             # code for the app's "Link with TV code"
+tvctl cast off
+```
+
+- The receiver runs in the tvctl server, which does not stop when idle while
+  casting is on. After a reboot or `tvctl server down` it runs again as soon
+  as the server starts (`tvctl cast on`, `tvctl server up`, `open`, ...).
+- Discovery uses DIAL (SSDP on UDP port 1900 and an HTTP port); macOS may ask
+  to allow incoming connections, and iOS asks the YouTube app for local network
+  access. If the Mac does not appear, use `tvctl cast code` in the app under
+  Settings > Watch on TV > Link with TV code.
+- YouTube only (YouTube Music casting is refused). Autoplay of recommended
+  videos after the queue ends is not supported.
+- It uses YouTube's unpublished TV (Lounge) API, as YouTube TV apps do, so
+  YouTube changes can break it. The protocol follows
+  [yt-cast-receiver](https://github.com/patrickkfkan/yt-cast-receiver) (MIT).
+- Settings are in `cast.json` and the receiver's ids in `cast-state.json` in
+  the data directory.
+
 ## Blackout
 
 A player that has been paused or has ended for 60 seconds turns black (the

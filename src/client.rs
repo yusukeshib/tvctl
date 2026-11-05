@@ -179,6 +179,34 @@ pub fn duck_apps() -> Result<Value> {
     }
 }
 
+/// `cast on/off`: saves the settings; `on` starts the server (which then keeps
+/// running while casting is on), `off` applies to a running server.
+pub fn cast_set(config: crate::cast::Config) -> Result<Value> {
+    crate::cast::save(&config)?;
+    if config.enabled {
+        send_autostart(&Request::Cast { config })
+    } else if is_running() {
+        send(&Request::Cast { config })
+    } else {
+        Ok(crate::cast::offline_status(&config))
+    }
+}
+
+pub fn cast_status() -> Result<Value> {
+    if is_running() {
+        send(&Request::CastStatus)
+    } else {
+        Ok(crate::cast::offline_status(&crate::cast::load()))
+    }
+}
+
+pub fn cast_code() -> Result<Value> {
+    if !crate::cast::load().enabled {
+        bail!("casting is off; run `tvctl cast on` first");
+    }
+    send_autostart(&Request::CastCode)
+}
+
 pub fn server_status() -> Result<Value> {
     if is_running() {
         let mut info = send(&Request::Ping)?;
