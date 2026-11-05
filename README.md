@@ -2,8 +2,8 @@
 
 A Rust CLI that lets agents (or people) play videos and music in windows on this
 computer and control them from the command line, like a TV remote for your
-screen. (It does not control physical TVs.) Every command prints JSON to
-stdout; errors go to stderr with exit code 1.
+screen. (It does not control physical TVs.) Commands print JSON to stdout
+(except `config`, which prints shell code); errors go to stderr with exit code 1.
 
 Services are plugins (`tvctl plugins` lists them). Currently: YouTube,
 Spotify (web player), Netflix, Amazon Prime Video (amazon.com and amazon.co.jp)
@@ -15,6 +15,28 @@ macOS only for now.
 ```sh
 cargo install tvctl        # or, from a checkout: cargo install --path .
 ```
+
+## Shell integration
+
+Add this to `~/.zshrc`, after `compinit`:
+
+```sh
+# If your shell setup does not already initialize completion:
+# autoload -Uz compinit && compinit
+eval "$(tvctl config zsh)"
+```
+
+For Bash, add this to `~/.bashrc` (no bash-completion dependency):
+
+```sh
+eval "$(tvctl config bash)"
+```
+
+Tab completes commands, options, enum values (layouts, backends, on/off/toggle),
+file paths, installed service names, and open player IDs (with service/title
+labels in zsh). Player completion only reads the running server, never starts
+it, and gives up quickly if it is unresponsive. The completion code is generated
+on shell startup so it stays in sync after tvctl upgrades.
 
 ## ChatGPT / Codex plugin and agent skill
 

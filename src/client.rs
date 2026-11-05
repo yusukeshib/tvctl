@@ -40,6 +40,19 @@ pub fn send(req: &Request) -> Result<Value> {
 fn send_to(socket: &Path, req: &Request) -> Result<Value> {
     let stream = UnixStream::connect(socket)
         .map_err(|_| anyhow!("tvctl server is not running (start it with `tvctl server up`)"))?;
+    exchange(stream, req)
+}
+
+/// Read-only, bounded request for shell completion; never starts a server.
+pub fn completion_list() -> Result<Value> {
+    let stream = connect()?;
+    let timeout = Some(Duration::from_millis(200));
+    stream.set_read_timeout(timeout)?;
+    stream.set_write_timeout(timeout)?;
+    exchange(stream, &Request::List)
+}
+
+fn exchange(stream: UnixStream, req: &Request) -> Result<Value> {
     let mut writer = stream.try_clone()?;
     serde_json::to_writer(&mut writer, req)?;
     writer.write_all(b"\n")?;

@@ -8,6 +8,7 @@ mod layout;
 mod plugin;
 mod protocol;
 mod server;
+mod shell;
 mod timeparse;
 
 use anyhow::{Result, anyhow};
@@ -35,7 +36,8 @@ backend. Unsupported commands fail with an error that lists the supported ones."
 
 const AFTER_LONG_HELP: &str = "\
 Output:
-  Every successful command prints one JSON document to stdout and exits 0.
+  Every successful command prints one JSON document to stdout and exits 0,
+  except `config <shell>`, which prints shell code for eval.
   Player commands (open, status, play, seek, ...) print:
     {\"id\": \"1\", \"service\": \"youtube\", \"backend\": \"webview\" | \"chrome\",
      \"player\": {...}, \"window\": {...}}
@@ -278,6 +280,12 @@ enum Cmd {
         #[command(subcommand)]
         action: ServerCmd,
     },
+    /// Output shell integration: eval "$(tvctl config zsh)" (or bash).
+    Config {
+        /// Shell to configure. In zsh, run compinit before evaluating the output.
+        #[arg(value_enum)]
+        shell: shell::Shell,
+    },
     #[command(name = "__serve", hide = true)]
     Serve {
         /// Do not stop when idle (started by `server up`).
@@ -415,6 +423,7 @@ fn seek_request(id: String, seek: Seek) -> Request {
 /// What a command does: something local, or one request to the server.
 #[derive(Debug)]
 enum Plan {
+    Config(shell::Shell),
     Serve(bool),
     ServerUp,
     ServerDown,
@@ -431,6 +440,7 @@ enum Plan {
 
 fn plan(cmd: Cmd) -> Result<Plan> {
     let req = match cmd {
+        Cmd::Config { shell } => return Ok(Plan::Config(shell)),
         Cmd::Serve { persistent } => return Ok(Plan::Serve(persistent)),
         Cmd::Server { action } => {
             return Ok(match action {
@@ -598,6 +608,10 @@ fn plan(cmd: Cmd) -> Result<Plan> {
 
 fn run(cmd: Cmd) -> Result<Value> {
     match plan(cmd)? {
+        Plan::Config(shell) => {
+            shell::register(shell, &mut std::io::stdout().lock())?;
+            Ok(Value::Null)
+        }
         Plan::Serve(persistent) => {
             server::run(persistent)?;
             Ok(Value::Null)
@@ -653,13 +667,16 @@ fn command() -> clap::Command {
 }
 
 fn main() {
+    clap_complete::CompleteEnv::with_factory(shell::command)
+        .var("TVCTL_COMPLETE")
+        .complete();
     let cli = match Cli::from_arg_matches(&command().get_matches()) {
         Ok(cli) => cli,
         Err(e) => e.exit(),
     };
-    let is_serve = matches!(cli.command, Cmd::Serve { .. });
+    let raw_output = matches!(cli.command, Cmd::Serve { .. } | Cmd::Config { .. });
     match run(cli.command) {
-        Ok(v) if !is_serve => {
+        Ok(v) if !raw_output => {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&v).expect("serializable")
@@ -704,6 +721,8 @@ mod tests {
     #[test]
     fn local_commands() {
         for (args, expect) in [
+            (vec!["config", "zsh"], "Config(Zsh)"),
+            (vec!["config", "bash"], "Config(Bash)"),
             (vec!["server", "up"], "ServerUp"),
             (vec!["server", "down"], "ServerDown"),
             (vec!["server", "status"], "ServerStatus"),
