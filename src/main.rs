@@ -1,4 +1,5 @@
 mod auth;
+mod blackout;
 mod cdp;
 mod client;
 mod duck;
@@ -42,8 +43,10 @@ Output:
   `duration` (seconds), `volume` (0-100), `muted`, `playback_rate`, `subtitles`,
   `quality`, `available_qualities`. Fields a plugin cannot report are null or absent.
   `window`: `position` {x, y} and `outer_size` of the window frame, `size` of the
-  video area, `fullscreen`, `on_top`, `work_area` (usable screen area). Coordinates
-  are logical pixels from the top-left of the main screen.
+  video area, `fullscreen`, `on_top`, `blackout` (the window has turned black
+  after 60 s paused or ended; the mouse, playback or a player command other
+  than status brings the picture back), `work_area` (usable screen area). Coordinates are logical
+  pixels from the top-left of the main screen.
 
 Errors:
   On failure, a message starting with `error:` is printed to stderr and the exit

@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 
 use super::Players;
 use crate::auth;
+use crate::blackout;
 use crate::cdp::{CLOSED_EVENT, Cdp};
 use crate::duck;
 use crate::layout::{self, Rect};
@@ -293,6 +294,13 @@ impl Backend {
         inst.cdp.call(
             "Page.addScriptToEvaluateOnNewDocument",
             json!({ "source": duck::PAGE_SCRIPT }),
+            Some(&session_id),
+            Duration::from_secs(5),
+        )?;
+        // Black after a while paused or ended (main frame only; the script checks).
+        inst.cdp.call(
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({ "source": blackout::page_script() }),
             Some(&session_id),
             Duration::from_secs(5),
         )?;
@@ -685,8 +693,17 @@ fn run_adapter(
         .plugin
         .file("chrome.js")
         .context("plugin has no chrome.js")?;
+    // The blackout script is installed here too: `Page.addScriptToEvaluateOnNewDocument`
+    // misses the document that was loading when the window opened. A player
+    // command is activity, which removes the blackout.
+    let blackout = blackout::page_script();
+    let wake = if action["action"] == "status" {
+        ""
+    } else {
+        blackout::WAKE_SCRIPT
+    };
     let expr = format!(
-        "(async () => {{\nif (!window.__tvctl) {{\n{adapter}\n}}\nreturn await window.__tvctl.run({action});\n}})()"
+        "(async () => {{\nif (!window.__tvctl) {{\n{adapter}\n}}\n{blackout}\n{wake}\nreturn await window.__tvctl.run({action});\n}})()"
     );
     evaluate(inst, player, &expr, timeout)
 }
@@ -697,6 +714,8 @@ struct Geometry {
     work_area: Rect,
     inner: (f64, f64),
     deco: (f64, f64),
+    /// The page is black (see `blackout`).
+    blackout: bool,
 }
 
 fn geometry(inst: &Instance, player: &ChromePlayer) -> Result<Geometry> {
@@ -709,7 +728,10 @@ fn geometry(inst: &Instance, player: &ChromePlayer) -> Result<Geometry> {
     let m = evaluate(
         inst,
         player,
-        "({ax: screen.availLeft, ay: screen.availTop, aw: screen.availWidth, ah: screen.availHeight, iw: innerWidth, ih: innerHeight, ow: outerWidth, oh: outerHeight})",
+        &format!(
+            "({{ax: screen.availLeft, ay: screen.availTop, aw: screen.availWidth, ah: screen.availHeight, iw: innerWidth, ih: innerHeight, ow: outerWidth, oh: outerHeight, blackout: {}}})",
+            blackout::SHOWN_EXPR
+        ),
         Duration::from_secs(5),
     )?;
     let f = |k: &str| m[k].as_f64().unwrap_or(0.0);
@@ -724,6 +746,7 @@ fn geometry(inst: &Instance, player: &ChromePlayer) -> Result<Geometry> {
         },
         inner: (f("iw"), f("ih")),
         deco: ((f("ow") - f("iw")).max(0.0), (f("oh") - f("ih")).max(0.0)),
+        blackout: m["blackout"].as_bool().unwrap_or(false),
     })
 }
 
@@ -796,6 +819,7 @@ fn window_info(inst: &Instance, player: &ChromePlayer) -> Result<Value> {
         "outer_size": { "width": b["width"], "height": b["height"] },
         "fullscreen": b["windowState"] == "fullscreen",
         "on_top": false,
+        "blackout": g.blackout,
         "work_area": g.work_area,
     }))
 }

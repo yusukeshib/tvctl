@@ -23,6 +23,7 @@ use tao::window::{Fullscreen, Window, WindowBuilder, WindowId};
 use wry::{WebView, WebViewBuilder};
 
 use super::{Players, Reply};
+use crate::blackout;
 use crate::client;
 use crate::duck;
 use crate::layout::{self, Rect};
@@ -36,6 +37,8 @@ const HOST_BRIDGE: &str = r#"(() => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   window.__tvctlHost = {
     run: async (req, action) => {
+      // A player command is activity: it removes the blackout.
+      if (action.action !== "status" && window.__tvctlBlackout) window.__tvctlBlackout.wake();
       try {
         const end = Date.now() + 15000;
         while (!(window.__tvctl && window.__tvctl.run)) {
@@ -116,6 +119,10 @@ enum IpcMessage {
         result: Option<Value>,
         error: Option<String>,
     },
+    /// The page turned black or back (`blackout`).
+    Blackout {
+        shown: bool,
+    },
 }
 
 struct Player {
@@ -126,6 +133,8 @@ struct Player {
     /// Scripts queued until the page reports ready.
     queued: Vec<String>,
     on_top: bool,
+    /// The page is black (see `blackout`).
+    blackout: bool,
     last_status: Value,
 }
 
@@ -374,6 +383,8 @@ impl State {
             .with_initialization_script(HOST_BRIDGE)
             // The ducking hook, in every frame (`tvctl duck`).
             .with_initialization_script_for_main_only(duck::PAGE_SCRIPT, false)
+            // Black after a while paused or ended.
+            .with_initialization_script_for_main_only(blackout::page_script(), true)
             .with_ipc_handler(move |req| {
                 let _ = proxy.send_event(UserEvent::Ipc {
                     player: ipc_id.clone(),
@@ -391,6 +402,7 @@ impl State {
             page_ready: false,
             queued: Vec::new(),
             on_top: false,
+            blackout: false,
             last_status: Value::Null,
         };
         if opts.position.is_none() && opts.layout.is_none() {
@@ -458,9 +470,16 @@ impl State {
             IpcMessage::Ready => {
                 if let Some(player) = self.players.get_mut(id) {
                     player.page_ready = true;
+                    // A new document starts without the blackout.
+                    player.blackout = false;
                     for script in std::mem::take(&mut player.queued) {
                         run_script(player, &script);
                     }
+                }
+            }
+            IpcMessage::Blackout { shown } => {
+                if let Some(player) = self.players.get_mut(id) {
+                    player.blackout = shown;
                 }
             }
             IpcMessage::Reply {
@@ -560,6 +579,7 @@ fn window_info(player: &Player) -> Value {
         "outer_size": { "width": outer.width, "height": outer.height },
         "fullscreen": window.fullscreen().is_some(),
         "on_top": player.on_top,
+        "blackout": player.blackout,
         "work_area": work_area(window),
         "scale_factor": window.scale_factor(),
     })

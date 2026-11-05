@@ -107,6 +107,16 @@ players are open; `tvctl duck off` turns it off.
 - `tvctl duck status` shows `ducking` (lowered now), `peak_db` (level of the
   monitored audio), `sources` (monitored apps playing now) and `error`.
 
+## Blackout
+
+A player that has been paused or has ended for 60 seconds turns black (the
+whole window content). Moving the mouse over the window, clicking, scrolling or
+typing in it brings the picture back without passing that input to the player,
+as do playback resuming and any tvctl player command except `status`; if it stays paused, it
+turns black again after another 60 seconds. `window.blackout` in the output
+shows whether it is black now (a `screenshot` is black then too).
+`TVCTL_BLACKOUT_SECS` sets the wait when the server starts (0 turns it off).
+
 ## Backends
 
 - **webview**: a native window with a WebView (tao + wry). No dependencies. Used
@@ -243,6 +253,8 @@ override built-ins with the same name.
 - `TVCTL_PLUGIN_DIR`: external plugin directory
 - `TVCTL_CHROME`: Chrome executable
 - `TVCTL_IDLE_SECS`: idle time before an on-demand server stops (default 5)
+- `TVCTL_BLACKOUT_SECS`: how long a player stays paused or ended before it
+  turns black (default 60; 0 turns blackout off)
 
 For plugin development, the hidden command `tvctl __eval <ID> <JS>` evaluates
 JavaScript in a Chrome-backend player page and prints the (awaited) result.

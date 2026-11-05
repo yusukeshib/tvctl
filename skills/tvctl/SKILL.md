@@ -86,6 +86,9 @@ that screen region. `tvctl <command> --help` describes every argument.
 - To verify what is on screen, take a screenshot rather than assuming.
   Protected (DRM) video can look black or white in screenshots and through screen
   sharing while it plays normally on the Mac's own display.
+- After 60 seconds paused or ended, the window turns black (`window.blackout`
+  is true; screenshots are black). Playing, any player command except `status`, or the user
+  moving the mouse over the window brings the picture back.
 - If the user closes the window, the player id becomes invalid (`no player`).
 
 ## 5. Logins (needs the user)

@@ -661,6 +661,68 @@ fn duck_hook_scales_media_volume_invisibly() {
     assert_eq!(env.ok(&["__eval", id, faded]), json!([0.8, 0.2]));
 }
 
+fn blackout(env: &Env, id: &str) -> bool {
+    env.ok(&["status", id])["window"]["blackout"]
+        .as_bool()
+        .expect("window.blackout")
+}
+
+/// A paused player turns black after `TVCTL_BLACKOUT_SECS`; playing again or a
+/// player command removes it, and the wait starts again.
+fn blackout_suite(backend: &str) {
+    let env = Env::new();
+    env.run_with_env(&["server", "up"], &[("TVCTL_BLACKOUT_SECS", "1")])
+        .unwrap();
+    let v = open(&env, backend, &["--paused"]);
+    let id = v["id"].as_str().unwrap();
+    assert_eq!(v["window"]["blackout"], false);
+    let wait = Duration::from_secs(10);
+    eventually("blackout while paused", wait, || blackout(&env, id));
+
+    // Playing removes it and keeps it off.
+    env.ok(&["play", id]);
+    eventually("no blackout after play", wait, || !blackout(&env, id));
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(!blackout(&env, id), "black while playing");
+
+    // Any player command removes it; still paused, it comes back.
+    env.ok(&["pause", id]);
+    eventually("blackout after pause", wait, || blackout(&env, id));
+    env.ok(&["seek", id, "+5"]);
+    eventually("no blackout after a command", wait, || !blackout(&env, id));
+    eventually("blackout again", wait, || blackout(&env, id));
+
+    if backend == "chrome" {
+        // Mouse input on the overlay removes it; synthetic moves of a resting
+        // pointer (same position) do not.
+        let fire = |ty: &str, x: i32| {
+            let script = format!(
+                "document.getElementById('__tvctl_blackout').dispatchEvent(new MouseEvent('{ty}', \
+                 {{bubbles: true, cancelable: true, screenX: {x}, screenY: 100}})), \
+                 window.__tvctlBlackout.shown"
+            );
+            env.ok(&["__eval", id, &script])
+        };
+        assert_eq!(fire("mousemove", 100), json!(true));
+        assert_eq!(fire("mousemove", 101), json!(true));
+        assert_eq!(fire("mousemove", 120), json!(false));
+        eventually("blackout after the mouse", wait, || blackout(&env, id));
+        assert_eq!(fire("mousedown", 120), json!(false));
+    }
+}
+
+#[test]
+#[ignore = "opens windows; run with --ignored"]
+fn webview_blackout() {
+    blackout_suite("webview");
+}
+
+#[test]
+#[ignore = "opens windows; run with --ignored"]
+fn chrome_blackout() {
+    blackout_suite("chrome");
+}
+
 #[test]
 #[ignore = "opens windows; run with --ignored"]
 fn eval_is_chrome_only() {
