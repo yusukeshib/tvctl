@@ -164,7 +164,15 @@ pub fn create(registry: Arc<Registry>, players: Arc<Players>) -> Result<(Loop, H
     let http_port = http.local_addr()?.port();
     std::thread::spawn(move || serve_plugin_files(http, &registry));
 
-    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    #[allow(unused_mut)]
+    let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    // The server is a background process: no Dock icon, Cmd+Tab entry or menu bar.
+    // Its windows still open and take focus when clicked.
+    #[cfg(target_os = "macos")]
+    {
+        use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+        event_loop.set_activation_policy(ActivationPolicy::Accessory);
+    }
     let proxy = event_loop.create_proxy();
     let handle = Handle {
         proxy: proxy.clone(),

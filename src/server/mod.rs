@@ -460,10 +460,10 @@ mod tests {
     }
 
     #[test]
-    fn builtin_youtube_prefers_chrome_when_logged_in() {
+    fn builtin_youtube_uses_chrome() {
         let r = Registry::load().unwrap();
         let yt = r.get("youtube").unwrap();
-        assert_eq!(choose_backend(yt, None, false), Ok(BackendKind::Webview));
+        assert_eq!(choose_backend(yt, None, false), Ok(BackendKind::Chrome));
         assert_eq!(choose_backend(yt, None, true), Ok(BackendKind::Chrome));
     }
 

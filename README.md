@@ -60,7 +60,7 @@ cloud sandboxes cannot show anything on your screen.
 ```sh
 tvctl server up                      # start the background server once
 tvctl open https://youtu.be/jNQXAC9IVRw --layout bottom-right --size 640x360
-# => {"id": "1", "service": "youtube", "backend": "webview", "player": {...}, "window": {...}}
+# => {"id": "1", "service": "youtube", "backend": "chrome", "player": {...}, "window": {...}}
 
 tvctl status 1
 tvctl play 1 / tvctl pause 1 / tvctl toggle 1
@@ -76,7 +76,7 @@ tvctl volume 1 50 / tvctl mute 1 / tvctl unmute 1
 tvctl speed 1 1.5
 tvctl window 1 --layout left         # left/right/top/bottom/top-left/.../center/maximize
 tvctl window 1 --layout bottom-right --size 480x270   # anchored to a corner
-tvctl window 1 --size 1280x720 --position 100,50 --on-top on
+tvctl window 1 --size 1280x720 --position 100,50
 tvctl fullscreen 1                   # toggle (or on/off)
 tvctl screenshot 1 shot.png          # PNG of the player window, even when covered
 tvctl list
@@ -176,8 +176,9 @@ shows whether it is black now (a `screenshot` is black then too).
 
 ## Backends
 
-- **webview**: a native window with a WebView (tao + wry). No dependencies. Used
-  for services with public embed APIs (YouTube logged out).
+- **webview**: a native window with a WebView (tao + wry). No dependencies. For
+  plugins built on public embed APIs; no built-in plugin uses it. The server runs
+  as a background app, so these windows do not appear in the Dock or Cmd+Tab.
 - **chrome**: an app window of Google Chrome, driven through the Chrome DevTools
   Protocol, using a dedicated profile at
   `~/Library/Application Support/tvctl/chrome-profile`. Used where a login or
@@ -186,8 +187,8 @@ shows whether it is black now (a `screenshot` is black then too).
   Always-on-top is not available in this backend.
 
 A plugin lists its backends in order of preference. If a plugin declares
-`prefer_backend_when_logged_in` and you are logged in, that backend is used
-(YouTube: Chrome, so Premium accounts get no ads). `open --backend` overrides.
+`prefer_backend_when_logged_in` and you are logged in, that backend is used.
+`open --backend` overrides.
 
 Run tvctl from a terminal on the Mac's own screen. A server started from an
 SSH session cannot use the macOS keychain, where Chrome keeps the key for its
@@ -204,7 +205,7 @@ quit that Chrome with Cmd+Q; tvctl then checks the login cookies.
 
 | Plugin | Backends | Login | Supported actions |
 |---|---|---|---|
-| `youtube` | webview (logged out), chrome (logged in) | optional (Premium: no ads) | all; `audio` only in chrome |
+| `youtube` | chrome | optional (Premium: no ads) | all |
 | `spotify` | chrome | required | play, pause, toggle, next, previous, seek, volume, mute |
 | `netflix` | chrome | required | all except previous, quality |
 | `primevideo` | chrome | required (amazon.com and/or amazon.co.jp account with Prime Video) | all except previous |

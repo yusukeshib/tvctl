@@ -455,7 +455,7 @@ mod tests {
     fn builtins_load_and_route() {
         let r = Registry::load().unwrap();
         let yt = r.get("youtube").expect("youtube plugin");
-        assert!(yt.file("webview.html").is_some());
+        assert!(yt.file("chrome.js").is_some());
         for u in [
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
             "youtu.be/dQw4w9WgXcQ",
@@ -684,7 +684,6 @@ mod tests {
         for a in ACTIONS {
             assert!(yt.supports(a, BackendKind::Chrome), "youtube chrome {a}");
         }
-        assert!(!yt.supports("audio", BackendKind::Webview));
         let sp = &r.get("spotify").unwrap().manifest;
         for a in [
             "play", "pause", "toggle", "next", "previous", "seek", "volume",
@@ -738,7 +737,7 @@ mod tests {
         assert!(pv["notes"].as_array().unwrap().len() > 1);
         let yt = r.describe("youtube").unwrap();
         assert_eq!(yt["login"]["required"], false);
-        assert_eq!(yt["login"]["backend_when_logged_in"], "chrome");
+        assert!(yt["login"].get("backend_when_logged_in").is_none());
         assert!(yt["login"].get("sites").is_none());
         let e = r.describe("hulu").unwrap_err().to_string();
         assert!(

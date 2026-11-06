@@ -59,7 +59,7 @@ Errors:
 
 Examples:
   tvctl open 'https://www.youtube.com/watch?v=iG9CE55wbtY' --subtitles ja
-  tvctl open 'https://youtu.be/jNQXAC9IVRw' --layout bottom-right --size 480x270 --on-top
+  tvctl open 'https://youtu.be/jNQXAC9IVRw' --layout bottom-right --size 480x270
   tvctl open 'https://open.spotify.com/album/5Z9iiGl2FcIfa3BMiv6OIw'
   tvctl open 'https://www.netflix.com/watch/81716297' --subtitles ja
   tvctl open 'https://www.amazon.com/gp/video/detail/B0GHXVBQLM' --subtitles ja

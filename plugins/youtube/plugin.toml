@@ -1,26 +1,18 @@
 name = "youtube"
 description = "YouTube videos (watch, youtu.be, shorts, embed, live URLs)"
 domains = ["youtube.com", "youtu.be", "youtube-nocookie.com"]
-# Preference order when not logged in. Logged out, the embedded player in the
-# native WebView is enough; logged in, Chrome plays as the user (Premium: no ads).
-backends = ["webview", "chrome"]
+backends = ["chrome"]
 actions = ["play", "pause", "toggle", "next", "previous", "seek", "subtitles", "audio", "volume", "speed", "quality"]
 
 examples = ["https://www.youtube.com/watch?v=jNQXAC9IVRw", "https://youtu.be/jNQXAC9IVRw?t=10"]
 notes = [
-  "No login needed: logged out it plays in a native window and ads may play. After `tvctl auth login youtube` it plays in Chrome as the user (Premium: no ads).",
+  "No login needed: logged out, ads may play. After `tvctl auth login youtube` it plays as the user (Premium: no ads).",
   "Subtitles: if a video has no track in the requested language, YouTube's auto-translation is used (`translated_to` in `subtitles`). `subtitles <ID> list` shows tracks and translation languages; no tracks means the video has no subtitles.",
-  "`audio` (audio tracks) works only in the Chrome backend (logged in, or `open --backend chrome`).",
   "Quality values: `available_qualities` in status (e.g. hd1080, hd720).",
   "`next` / `previous` move within a playlist.",
 ]
-
-[unsupported_actions]
-# The IFrame API cannot switch audio tracks.
-webview = ["audio"]
 
 [auth]
 login_url = "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26next%3Dhttps%253A%252F%252Fwww.youtube.com%252F"
 cookie_url = "https://www.youtube.com"
 logged_in_cookies = ["LOGIN_INFO"]
-prefer_backend_when_logged_in = "chrome"

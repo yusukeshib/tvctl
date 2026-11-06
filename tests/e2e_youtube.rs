@@ -31,15 +31,17 @@ fn wait_playing_main_video(env: &Env, id: &str) {
     });
 }
 
-fn suite(backend: &str) {
+#[test]
+#[ignore = "needs network and opens windows; run with --ignored"]
+fn youtube_chrome() {
     let env = Env::with_profile();
     env.up();
     let url = format!("{TED}&t=60");
-    let v = env.ok(&["open", &url, "--backend", backend, "--layout", "right"]);
+    let v = env.ok(&["open", &url, "--layout", "right"]);
     let id = v["id"].as_str().unwrap().to_string();
     let id = id.as_str();
     assert_eq!(v["service"], "youtube");
-    assert_eq!(v["backend"], backend);
+    assert_eq!(v["backend"], "chrome");
     wait_playing_main_video(&env, id);
     let st = env.ok(&["status", id]);
     assert_eq!(p(&st, "video_id"), "iG9CE55wbtY");
@@ -54,9 +56,7 @@ fn suite(backend: &str) {
         f(&p(&st, "current_time")) >= 59.0,
         "t=60 in the URL is honored"
     );
-    if backend == "chrome" {
-        assert_eq!(p(&st, "fills_window"), true);
-    }
+    assert_eq!(p(&st, "fills_window"), true);
 
     assert_eq!(p(&env.ok(&["pause", id]), "state"), "paused");
     let t = f(&p(&env.ok(&["seek", id, "5:00"]), "current_time"));
@@ -107,7 +107,7 @@ fn suite(backend: &str) {
     env.ok(&["close", id]);
 
     // Auto-translated Japanese subtitles on a video without a Japanese track.
-    let v = env.ok(&["open", ZOO, "--backend", backend, "--subtitles", "ja"]);
+    let v = env.ok(&["open", ZOO, "--subtitles", "ja"]);
     let id = v["id"].as_str().unwrap().to_string();
     wait_playing_main_video(&env, &id);
     eventually("translated subtitles", Duration::from_secs(20), || {
@@ -118,22 +118,10 @@ fn suite(backend: &str) {
 
 #[test]
 #[ignore = "needs network and opens windows; run with --ignored"]
-fn youtube_webview() {
-    suite("webview");
-}
-
-#[test]
-#[ignore = "needs network and opens windows; run with --ignored"]
-fn youtube_chrome() {
-    suite("chrome");
-}
-
-#[test]
-#[ignore = "needs network and opens windows; run with --ignored"]
 fn youtube_chrome_audio_tracks_and_fill() {
     let env = Env::with_profile();
     env.up();
-    let v = env.ok(&["open", TED, "--backend", "chrome"]);
+    let v = env.ok(&["open", TED]);
     let id = v["id"].as_str().unwrap().to_string();
     wait_playing_main_video(&env, &id);
     let a = env.ok(&["audio", &id, "list"]);
