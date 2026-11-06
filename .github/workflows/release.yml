@@ -59,7 +59,8 @@ jobs:
     needs: check-version
     if: needs.check-version.outputs.should_release == 'true'
     # tvctl is macOS-only; `cargo publish` builds the package to verify it.
-    runs-on: macos-14
+    # macos-latest: pinned macOS images are retired over time (macos-14 was).
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
