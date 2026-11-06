@@ -56,7 +56,6 @@ fn server_lifecycle() {
     assert_eq!(env.ok(&["server", "status"])["running"], false);
     let up = env.ok(&["server", "up"]);
     assert_eq!(up["already_running"], false);
-    assert_eq!(up["persistent"], true);
     assert!(up["pid"].as_u64().unwrap() > 0);
     assert_eq!(env.ok(&["server", "up"])["already_running"], true);
     let st = env.ok(&["server", "status"]);
@@ -109,66 +108,60 @@ fn running(env: &Env) -> bool {
     env.ok(&["server", "status"])["running"] == true
 }
 
+/// Only `server up` starts the server: without it, commands that need one fail
+/// and leave it stopped.
+#[test]
+fn commands_do_not_start_the_server() {
+    let env = Env::new();
+    for args in [
+        vec!["open", "https://www.youtube.com/watch?v=x"],
+        vec!["status", "1"],
+        vec!["close", "1"],
+        vec!["auth", "status"],
+        vec!["auth", "login", "fake"],
+    ] {
+        let e = env.err(&args);
+        assert!(
+            e.contains("not running") && e.contains("server up"),
+            "{args:?}: {e}"
+        );
+        assert!(!running(&env), "{args:?} started the server");
+    }
+    // Cast settings are saved without starting the server.
+    let s = env.ok(&["cast", "on", "--name", "test"]);
+    assert_eq!(
+        (s["enabled"].clone(), s["server_running"].clone()),
+        (json!(true), json!(false))
+    );
+    assert!(env.err(&["cast", "code"]).contains("not running"));
+    assert!(!running(&env), "cast started the server");
+    env.ok(&["cast", "off"]);
+}
+
+/// Opening and closing players never stops the server, even when the user
+/// closes the last window.
 #[test]
 #[ignore = "opens windows; run with --ignored"]
-fn server_starts_on_open_and_stops_when_idle() {
+fn server_stays_up_without_players() {
     let env = Env::new();
-    // Player commands do not start a server.
-    assert!(env.err(&["status", "1"]).contains("not running"));
-    assert!(!running(&env));
+    env.up();
     for backend in ["webview", "chrome"] {
         let v = open(&env, backend, &[]);
-        let id = v["id"].as_str().unwrap().to_string();
-        let st = env.ok(&["server", "status"]);
-        assert_eq!(st["persistent"], false, "{backend}");
-        assert_eq!(st["players"], 1);
-        // Stays up while a player is open, even past the idle timeout.
+        env.ok(&["close", v["id"].as_str().unwrap()]);
         std::thread::sleep(Duration::from_millis(1500));
-        assert!(running(&env), "{backend}: stopped with an open player");
-        env.ok(&["close", &id]);
-        eventually("idle shutdown", Duration::from_secs(10), || !running(&env));
+        assert!(running(&env), "{backend}: stopped after close");
     }
-}
-
-#[test]
-#[ignore = "opens windows; run with --ignored"]
-fn server_stops_when_the_user_closes_the_last_window() {
-    let env = Env::new();
     // The fake login page closes its own window, as a user closing it would.
     let _ = env.run(&["open", &env.url("/login"), "--backend", "chrome"]);
-    eventually(
-        "idle shutdown after the window closed",
-        Duration::from_secs(15),
-        || !running(&env),
+    eventually("the window closed", Duration::from_secs(15), || {
+        env.ok(&["list"]) == json!({ "players": [] })
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        running(&env),
+        "stopped after the user closed the last window"
     );
-}
-
-#[test]
-#[ignore = "opens windows; run with --ignored"]
-fn persistent_server_stays_up() {
-    let env = Env::new();
-    // `server up` on an on-demand server makes it persistent.
-    let v = open(&env, "webview", &[]);
-    let up = env.ok(&["server", "up"]);
-    assert_eq!(
-        (up["already_running"].clone(), up["persistent"].clone()),
-        (json!(true), json!(true))
-    );
-    env.ok(&["close", v["id"].as_str().unwrap()]);
-    std::thread::sleep(Duration::from_millis(2500));
-    assert!(running(&env));
-    // Auth commands also start a server on demand; it then stops when idle.
-    env.ok(&["server", "down"]);
-    assert_eq!(
-        env.ok(&["auth", "status", "fake"])["services"][0]["logged_in"],
-        false
-    );
-    assert_eq!(env.ok(&["server", "status"])["persistent"], false);
-    eventually(
-        "idle shutdown after auth status",
-        Duration::from_secs(10),
-        || !running(&env),
-    );
+    assert_eq!(env.ok(&["server", "up"])["already_running"], true);
 }
 
 #[test]

@@ -50,9 +50,11 @@ tvctl status <ID>           # state, title, current_time/duration (seconds), win
 tvctl close <ID>
 ```
 
-Use the `id` from `open` (or `tvctl list`) in later commands. No setup is needed:
-a background server starts on demand and stops a few seconds after the last
-player closes. Quote URLs (`'...'`): `?` and `&` break in shells such as zsh.
+Use the `id` from `open` (or `tvctl list`) in later commands. `open`, player,
+`auth` and `cast code` commands need the background server; nothing starts it
+implicitly. If one fails with `server is not running`, run `tvctl server up` and
+retry. It keeps running, with or without players, until `tvctl server down`.
+Quote URLs (`'...'`): `?` and `&` break in shells such as zsh.
 
 | Goal | Command |
 |---|---|
@@ -107,8 +109,8 @@ Chrome profile, not the user's everyday browser.
 ## 6. Troubleshooting
 
 - Follow the error message: tvctl errors say what to do (e.g. which login to run).
-- `error: ... server is not running` for a player command: the player was closed;
-  open it again.
+- `error: ... server is not running`: run `tvctl server up`, then retry (for a
+  player command, the player is gone; open it again).
 - A `warning` about an SSH session (or `auth login` refused for that reason):
   the tvctl server was started over SSH, where Chrome cannot use the macOS
   keychain, so logins are not saved or loaded. Run `tvctl server down` and ask

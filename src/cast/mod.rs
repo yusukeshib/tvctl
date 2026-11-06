@@ -74,7 +74,6 @@ pub struct Config {
     pub name: String,
 }
 
-
 fn config_path(dir: &Path) -> PathBuf {
     dir.join("cast.json")
 }
@@ -194,10 +193,6 @@ impl Cast {
             }),
             wake: Condvar::new(),
         }
-    }
-
-    pub fn enabled(&self) -> bool {
-        self.inner.lock().unwrap().config.enabled
     }
 
     pub fn set_config(&self, config: Config) -> Value {

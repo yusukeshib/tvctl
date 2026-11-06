@@ -7,9 +7,9 @@ mod webview;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -24,22 +24,11 @@ use crate::protocol::{PlayerAction, Request, Response, WindowOpts};
 pub type Reply = std::sync::mpsc::Sender<Result<Value, String>>;
 
 /// Player ids shared by all backends.
+#[derive(Default)]
 pub struct Players {
     next: AtomicU64,
     /// Player id -> (backend, plugin name).
     owners: Mutex<HashMap<String, (BackendKind, String)>>,
-    /// Last time a player was added or removed (for the idle shutdown).
-    changed: Mutex<Instant>,
-}
-
-impl Default for Players {
-    fn default() -> Self {
-        Players {
-            next: AtomicU64::new(0),
-            owners: Mutex::default(),
-            changed: Mutex::new(Instant::now()),
-        }
-    }
 }
 
 impl Players {
@@ -49,14 +38,11 @@ impl Players {
             .lock()
             .unwrap()
             .insert(id.clone(), (backend, plugin.to_string()));
-        *self.changed.lock().unwrap() = Instant::now();
         id
     }
 
     pub fn remove(&self, id: &str) {
-        if self.owners.lock().unwrap().remove(id).is_some() {
-            *self.changed.lock().unwrap() = Instant::now();
-        }
+        self.owners.lock().unwrap().remove(id);
     }
 
     fn owner(&self, id: &str) -> Result<BackendKind, String> {
@@ -82,13 +68,6 @@ struct Router {
     players: Arc<Players>,
     webview: webview::Handle,
     chrome: chrome::Backend,
-    /// Started with `server up`: no idle shutdown.
-    persistent: AtomicBool,
-    /// Requests being handled right now.
-    busy: AtomicUsize,
-    last_request: Mutex<Instant>,
-    /// The server stops after this long without players and requests.
-    idle_timeout: Duration,
     /// Started from an SSH session (see `SSH_SESSION_WARNING`).
     ssh_session: bool,
     duck: duck::Duck,
@@ -155,15 +134,6 @@ fn in_ssh_session() -> bool {
         .any(|v| std::env::var_os(v).is_some_and(|s| !s.is_empty()))
 }
 
-/// Idle grace period: `$TVCTL_IDLE_SECS` or 5 seconds.
-fn idle_timeout() -> Duration {
-    let secs = std::env::var("TVCTL_IDLE_SECS")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(5.0);
-    Duration::from_secs_f64(secs.max(0.0))
-}
-
 fn err(e: anyhow::Error) -> String {
     format!("{e:#}")
 }
@@ -194,10 +164,6 @@ impl Router {
     fn handle_inner(&self, req: Request) -> Result<Value, String> {
         match req {
             Request::Ping => Ok(self.info()),
-            Request::SetPersistent { persistent } => {
-                self.persistent.store(persistent, Ordering::SeqCst);
-                Ok(self.info())
-            }
             Request::Shutdown => {
                 self.chrome.shutdown();
                 self.webview
@@ -334,24 +300,8 @@ impl Router {
             "socket": client::socket_path(),
             "log": client::log_path(),
             "players": self.players.count(),
-            "persistent": self.persistent.load(Ordering::SeqCst),
-            "idle_timeout_secs": self.idle_timeout.as_secs_f64(),
             "ssh_session": self.ssh_session,
         })
-    }
-
-    /// True when a non-persistent server has had no players and no requests for
-    /// the idle timeout.
-    fn is_idle(&self) -> bool {
-        if self.persistent.load(Ordering::SeqCst)
-            || self.cast.enabled()
-            || self.busy.load(Ordering::SeqCst) > 0
-            || self.players.count() > 0
-        {
-            return false;
-        }
-        let last = (*self.last_request.lock().unwrap()).max(*self.players.changed.lock().unwrap());
-        last.elapsed() >= self.idle_timeout
     }
 
     fn auth_plugin(&self, name: &str) -> Result<&Plugin, String> {
@@ -400,9 +350,9 @@ fn choose_backend(
         .ok_or_else(|| "plugin has no backends".into())
 }
 
-/// Runs the server. Unless `persistent`, it stops once it has been idle (no
-/// players, no requests) for the idle timeout.
-pub fn run(persistent: bool) -> Result<()> {
+/// Runs the server until a `Shutdown` request (`tvctl server down`). Opening or
+/// closing players never starts or stops it.
+pub fn run() -> Result<()> {
     let socket = client::socket_path();
     if client::is_running() {
         bail!("server already running at {}", socket.display());
@@ -420,10 +370,6 @@ pub fn run(persistent: bool) -> Result<()> {
         players,
         webview,
         chrome,
-        persistent: AtomicBool::new(persistent),
-        busy: AtomicUsize::new(0),
-        last_request: Mutex::new(Instant::now()),
-        idle_timeout: idle_timeout(),
         ssh_session: in_ssh_session(),
         duck: duck::Duck::new(duck::load()),
         cast: cast::Cast::new(cast::load()),
@@ -432,17 +378,6 @@ pub fn run(persistent: bool) -> Result<()> {
     std::thread::spawn(move || duck::run(&duck_host.duck, &*duck_host));
     let cast_host = router.clone();
     std::thread::spawn(move || cast::run(&cast_host.cast, &*cast_host));
-    let monitor = router.clone();
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_millis(250));
-            if monitor.is_idle() {
-                eprintln!("idle for {:?}; stopping", monitor.idle_timeout);
-                let _ = monitor.handle(Request::Shutdown);
-                break;
-            }
-        }
-    });
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let router = router.clone();
@@ -464,17 +399,7 @@ fn handle_connection(stream: UnixStream, router: &Router) {
         return;
     }
     let result = match serde_json::from_str::<Request>(&line) {
-        // Status checks (`server status`, `server up` probes) do not keep an idle
-        // server alive; everything else counts as activity.
-        Ok(req @ Request::Ping) => router.handle(req),
-        Ok(req) => {
-            router.busy.fetch_add(1, Ordering::SeqCst);
-            *router.last_request.lock().unwrap() = Instant::now();
-            let r = router.handle(req);
-            *router.last_request.lock().unwrap() = Instant::now();
-            router.busy.fetch_sub(1, Ordering::SeqCst);
-            r
-        }
+        Ok(req) => router.handle(req),
         Err(e) => Err(format!("bad request: {e}")),
     };
     let mut stream = stream;

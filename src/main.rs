@@ -27,8 +27,10 @@ Play videos and music (YouTube, Spotify, Netflix, Prime Video, ...) in windows a
 Workflow:
   1. `tvctl open <URL>` opens a player window and prints its `id`.
   2. Control it with `tvctl <command> <ID> ...`; `tvctl list` shows open players.
-  3. `tvctl close <ID>`. A background server starts on demand and stops a few
-     seconds after the last player closes; no setup is needed.
+  3. `tvctl close <ID>`.
+  Player and auth commands need the background server: start it once with
+  `tvctl server up` and stop it with `tvctl server down`. Nothing else starts
+  or stops it; commands that need it fail while it is not running.
 
 Each service is a plugin. `tvctl plugins` shows, per plugin, the URL domains it
 handles, its `actions` (supported player commands) and `unsupported_actions` per
@@ -82,8 +84,8 @@ struct Cli {
 enum Cmd {
     /// Open a URL in a new player window; prints the new player's id and status.
     ///
-    /// The plugin is chosen by the URL's domain (see `tvctl plugins`). Starts
-    /// the background server if it is not running.
+    /// The plugin is chosen by the URL's domain (see `tvctl plugins`). Fails
+    /// unless the background server is running (`tvctl server up`).
     Open {
         /// Video or music URL of a supported service, e.g. a YouTube watch/youtu.be/shorts
         /// URL, an open.spotify.com track/album/playlist URL, a netflix.com
@@ -275,7 +277,7 @@ enum Cmd {
         /// Plugin name, e.g. netflix; all plugins when omitted.
         name: Option<String>,
     },
-    /// Manage the background server (normally automatic).
+    /// Start, stop or inspect the background server.
     Server {
         #[command(subcommand)]
         action: ServerCmd,
@@ -287,11 +289,7 @@ enum Cmd {
         shell: shell::Shell,
     },
     #[command(name = "__serve", hide = true)]
-    Serve {
-        /// Do not stop when idle (started by `server up`).
-        #[arg(long)]
-        persistent: bool,
-    },
+    Serve,
     /// Evaluate JavaScript in a Chrome-backend player page (plugin development).
     #[command(name = "__eval", hide = true)]
     Eval { id: String, script: String },
@@ -299,11 +297,9 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum ServerCmd {
-    /// Start the server and keep it running when no players are open (avoids
-    /// restarting Chrome between uses).
+    /// Start the server (needed by `open`, player commands, `auth` and casting).
     ///
-    /// Without this, `open` and `auth` start it on demand and it stops a few
-    /// seconds after the last player closes (`TVCTL_IDLE_SECS`).
+    /// It keeps running, with or without players, until `server down`.
     Up,
     /// Stop the server and close all players.
     Down,
@@ -340,7 +336,8 @@ enum DuckCmd {
 
 #[derive(Subcommand)]
 enum CastCmd {
-    /// Turn the cast receiver on (saved; the server keeps running while it is on).
+    /// Turn the cast receiver on (saved; the receiver runs while the server runs,
+    /// so start it with `tvctl server up`).
     ///
     /// Devices on the same network then list this Mac in the YouTube app's Cast
     /// menu. Casting opens a player window; play, pause, seek, volume and the
@@ -424,7 +421,7 @@ fn seek_request(id: String, seek: Seek) -> Request {
 #[derive(Debug)]
 enum Plan {
     Config(shell::Shell),
-    Serve(bool),
+    Serve,
     ServerUp,
     ServerDown,
     ServerStatus,
@@ -441,7 +438,7 @@ enum Plan {
 fn plan(cmd: Cmd) -> Result<Plan> {
     let req = match cmd {
         Cmd::Config { shell } => return Ok(Plan::Config(shell)),
-        Cmd::Serve { persistent } => return Ok(Plan::Serve(persistent)),
+        Cmd::Serve => return Ok(Plan::Serve),
         Cmd::Server { action } => {
             return Ok(match action {
                 ServerCmd::Up => Plan::ServerUp,
@@ -612,8 +609,8 @@ fn run(cmd: Cmd) -> Result<Value> {
             shell::register(shell, &mut std::io::stdout().lock())?;
             Ok(Value::Null)
         }
-        Plan::Serve(persistent) => {
-            server::run(persistent)?;
+        Plan::Serve => {
+            server::run()?;
             Ok(Value::Null)
         }
         Plan::ServerUp => client::server_up(),
@@ -636,7 +633,9 @@ fn run(cmd: Cmd) -> Result<Value> {
             }
         }
         Plan::Remote(req) => {
-            if let Request::AuthLogin { service, site } = &req {
+            if let Request::AuthLogin { service, site } = &req
+                && client::is_running()
+            {
                 let service = match site {
                     Some(s) => format!("{service} ({s})"),
                     None => service.clone(),
@@ -647,9 +646,6 @@ fn run(cmd: Cmd) -> Result<Value> {
                 );
             }
             match req {
-                Request::Open { .. } | Request::AuthLogin { .. } | Request::AuthStatus { .. } => {
-                    client::send_autostart(&req)
-                }
                 Request::List => client::list(),
                 _ => client::send(&req),
             }
@@ -674,7 +670,7 @@ fn main() {
         Ok(cli) => cli,
         Err(e) => e.exit(),
     };
-    let raw_output = matches!(cli.command, Cmd::Serve { .. } | Cmd::Config { .. });
+    let raw_output = matches!(cli.command, Cmd::Serve | Cmd::Config { .. });
     match run(cli.command) {
         Ok(v) if !raw_output => {
             println!(
@@ -728,8 +724,7 @@ mod tests {
             (vec!["server", "status"], "ServerStatus"),
             (vec!["plugins"], "Plugins(None)"),
             (vec!["plugins", "netflix"], "Plugins(Some(\"netflix\"))"),
-            (vec!["__serve"], "Serve(false)"),
-            (vec!["__serve", "--persistent"], "Serve(true)"),
+            (vec!["__serve"], "Serve"),
         ] {
             let mut argv = vec!["tvctl"];
             argv.extend(args.iter());

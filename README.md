@@ -58,6 +58,7 @@ cloud sandboxes cannot show anything on your screen.
 ## Usage
 
 ```sh
+tvctl server up                      # start the background server once
 tvctl open https://youtu.be/jNQXAC9IVRw --layout bottom-right --size 640x360
 # => {"id": "1", "service": "youtube", "backend": "webview", "player": {...}, "window": {...}}
 
@@ -96,11 +97,12 @@ tvctl duck on --apps ChatGPT --level 20   # only while ChatGPT plays, to 20%
 tvctl duck status / tvctl duck apps / tvctl duck off
 ```
 
-The background server starts on demand (`open`, `auth`) and stops a few seconds
-after the last player closes (`TVCTL_IDLE_SECS`, default 5), quitting
-tvctl's Chrome too. `tvctl server up` keeps it running without players
-(avoids restarting Chrome between uses); `tvctl server down` stops it and
-closes all players; `tvctl server status` shows its state.
+Player, `auth` and `cast code` commands need the background server. Start it
+with `tvctl server up`; it keeps running, with or without players, until
+`tvctl server down`, which closes all players and quits tvctl's Chrome.
+Nothing else starts or stops it: without a server those commands fail with
+an error telling you to run `tvctl server up`.
+`tvctl server status` shows its state.
 
 `--size` is the video area; layouts without `--size` fill their screen region.
 `tvctl --help` describes the workflow, the JSON output and error format, and
@@ -140,16 +142,16 @@ the app shows the player's state. A new video replaces the cast window at the
 same place and size; tapping Disconnect in the app closes it.
 
 ```sh
-tvctl cast on               # saved; the server keeps running while it is on
+tvctl cast on               # saved; the receiver runs while the server runs
 tvctl cast on --name "Living room"
 tvctl cast status           # running, connected devices (senders), player, video
 tvctl cast code             # code for the app's "Link with TV code"
 tvctl cast off
 ```
 
-- The receiver runs in the tvctl server, which does not stop when idle while
-  casting is on. After a reboot or `tvctl server down` it runs again as soon
-  as the server starts (`tvctl cast on`, `tvctl server up`, `open`, ...).
+- The receiver runs in the tvctl server; `tvctl cast on` does not start the
+  server. After a reboot or `tvctl server down` it runs again as soon as
+  `tvctl server up` starts the server.
 - Discovery uses DIAL (SSDP on UDP port 1900 and an HTTP port); macOS may ask
   to allow incoming connections, and iOS asks the YouTube app for local network
   access. If the Mac does not appear, use `tvctl cast code` in the app under
@@ -307,7 +309,6 @@ override built-ins with the same name.
 - `TVCTL_DATA_DIR`: data directory (Chrome profile, login state)
 - `TVCTL_PLUGIN_DIR`: external plugin directory
 - `TVCTL_CHROME`: Chrome executable
-- `TVCTL_IDLE_SECS`: idle time before an on-demand server stops (default 5)
 - `TVCTL_BLACKOUT_SECS`: how long a player stays paused or ended before it
   turns black (default 60; 0 turns blackout off)
 
