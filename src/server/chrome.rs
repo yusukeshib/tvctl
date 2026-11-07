@@ -23,6 +23,10 @@ use crate::protocol::{Switch, WindowOpts};
 
 const DEFAULT_SIZE: (f64, f64) = (960.0, 540.0);
 
+/// How long tvctl's Chrome keeps running without players and other work: the
+/// next player opens fast, and an unused Chrome leaves the Dock afterwards.
+const IDLE_QUIT: Duration = Duration::from_secs(60);
+
 struct ChromePlayer {
     plugin: Plugin,
     target_id: String,
@@ -39,9 +43,114 @@ struct Instance {
 
 pub struct Backend {
     players: Arc<Players>,
-    instance: Mutex<Option<Arc<Instance>>>,
+    shared: Arc<Shared>,
     /// Serializes window creation so new targets can be matched to requests.
     open_lock: Mutex<()>,
+}
+
+/// State that the event watcher and the idle timers use too.
+#[derive(Default)]
+struct Shared {
+    instance: Mutex<Option<Arc<Instance>>>,
+    idle: Mutex<Idle>,
+}
+
+/// Work in progress on Chrome. Lock order: `Shared::instance`, then `Shared::idle`.
+#[derive(Default)]
+struct Idle {
+    /// Operations that use Chrome without (yet) owning a player: `open`, logins.
+    busy: usize,
+    /// Bumped by every operation and every scheduled quit; a scheduled quit only
+    /// runs if nothing happened since.
+    generation: u64,
+}
+
+impl Idle {
+    fn begin(&mut self) {
+        self.busy += 1;
+        self.generation += 1;
+    }
+
+    fn end(&mut self) {
+        self.busy -= 1;
+    }
+
+    /// Starts a new idle period and returns its generation.
+    fn schedule(&mut self) -> u64 {
+        self.generation += 1;
+        self.generation
+    }
+
+    fn may_quit(&self, generation: u64) -> bool {
+        self.busy == 0 && self.generation == generation
+    }
+}
+
+impl Shared {
+    /// Quits Chrome after `IDLE_QUIT` unless something uses it in the meantime.
+    fn schedule_quit(self: &Arc<Self>) {
+        let generation = self.idle.lock().unwrap().schedule();
+        let shared = self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(IDLE_QUIT);
+            shared.quit_if_idle(generation);
+        });
+    }
+
+    /// `schedule_quit` when Chrome has no players.
+    fn schedule_quit_if_unused(self: &Arc<Self>) {
+        let unused = self
+            .instance
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|inst| inst.players.lock().unwrap().is_empty());
+        if unused {
+            self.schedule_quit();
+        }
+    }
+
+    fn quit_if_idle(&self, generation: u64) {
+        let mut guard = self.instance.lock().unwrap();
+        if !self.idle.lock().unwrap().may_quit(generation) {
+            return;
+        }
+        let Some(inst) = guard.as_ref() else {
+            return;
+        };
+        if !inst.players.lock().unwrap().is_empty() {
+            return;
+        }
+        let inst = guard.take().unwrap();
+        if !inst.cdp.is_closed() {
+            let _ = inst
+                .cdp
+                .call("Browser.close", json!({}), None, Duration::from_secs(5));
+            // Keep the instance lock until Chrome is gone: a Chrome started on the
+            // profile meanwhile would hand its window to the exiting one.
+            if let Err(e) = wait_profile_unlocked(&inst.profile) {
+                eprintln!("chrome: quitting idle Chrome: {e:#}");
+            }
+        }
+    }
+}
+
+/// Marks Chrome busy (not idle) while alive; afterwards an unused Chrome quits
+/// after `IDLE_QUIT`.
+struct Busy(Arc<Shared>);
+
+impl Busy {
+    fn new(shared: &Arc<Shared>) -> Busy {
+        shared.idle.lock().unwrap().begin();
+        Busy(shared.clone())
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.idle.lock().unwrap().end();
+        self.0.schedule_quit_if_unused();
+    }
 }
 
 fn chrome_path() -> Result<PathBuf> {
@@ -87,14 +196,15 @@ impl Backend {
     pub fn new(players: Arc<Players>) -> Backend {
         Backend {
             players,
-            instance: Mutex::new(None),
+            shared: Arc::default(),
             open_lock: Mutex::new(()),
         }
     }
 
     /// Returns the running Chrome, launching (or reattaching to) it if needed.
+    /// Callers hold a `Busy` so that it does not quit as idle meanwhile.
     fn instance(&self) -> Result<Arc<Instance>> {
-        let mut guard = self.instance.lock().unwrap();
+        let mut guard = self.shared.instance.lock().unwrap();
         if let Some(inst) = guard.as_ref().filter(|i| !i.cdp.is_closed()) {
             return Ok(inst.clone());
         }
@@ -162,6 +272,7 @@ impl Backend {
         let events = inst.cdp.subscribe();
         let players = inst.players.clone();
         let registry = self.players.clone();
+        let shared = self.shared.clone();
         std::thread::spawn(move || {
             for ev in events {
                 match ev["method"].as_str() {
@@ -173,9 +284,15 @@ impl Backend {
                             .filter(|(_, p)| p.target_id == target)
                             .map(|(id, _)| id.clone())
                             .collect();
+                        let closed_player = !gone.is_empty();
                         for id in gone {
                             map.remove(&id);
                             registry.remove(&id);
+                        }
+                        drop(map);
+                        // The user closed a player window.
+                        if closed_player {
+                            shared.schedule_quit_if_unused();
                         }
                     }
                     Some(CLOSED_EVENT) => {
@@ -192,6 +309,7 @@ impl Backend {
 
     fn player(&self, id: &str) -> Result<(Arc<Instance>, Arc<ChromePlayer>)> {
         let inst = self
+            .shared
             .instance
             .lock()
             .unwrap()
@@ -240,6 +358,7 @@ impl Backend {
         action: Value,
         opts: &WindowOpts,
     ) -> Result<Value> {
+        let _busy = Busy::new(&self.shared);
         let result = self.open_inner(id, plugin, action, opts);
         if result.is_err() {
             // The caller gets no id for a failed open, so it could not close the
@@ -382,13 +501,14 @@ impl Backend {
         )?;
         inst.players.lock().unwrap().remove(id);
         self.players.remove(id);
+        self.shared.schedule_quit_if_unused();
         Ok(json!({ "id": id, "closed": true }))
     }
 
     /// Runs a script in every player page, ignoring failures (e.g. a page that is
     /// navigating).
     pub fn run_in_all(&self, script: &str) {
-        let Some(inst) = self.instance.lock().unwrap().clone() else {
+        let Some(inst) = self.shared.instance.lock().unwrap().clone() else {
             return;
         };
         let players: Vec<Arc<ChromePlayer>> =
@@ -424,7 +544,7 @@ impl Backend {
     }
 
     pub fn list(&self) -> Vec<Value> {
-        let Some(inst) = self.instance.lock().unwrap().clone() else {
+        let Some(inst) = self.shared.instance.lock().unwrap().clone() else {
             return Vec::new();
         };
         let players: Vec<(String, Arc<ChromePlayer>)> = inst
@@ -450,7 +570,7 @@ impl Backend {
 
     /// Closes Chrome if this server started or attached to it.
     pub fn shutdown(&self) {
-        if let Some(inst) = self.instance.lock().unwrap().take() {
+        if let Some(inst) = self.shared.instance.lock().unwrap().take() {
             let _ = inst
                 .cdp
                 .call("Browser.close", json!({}), None, Duration::from_secs(5));
@@ -460,6 +580,7 @@ impl Backend {
     /// Opens the plugin's login page in a normal Chrome window and blocks until the
     /// user closes that window; then checks and records the login state.
     pub fn login(&self, plugin: &Plugin, site: Option<&str>) -> Result<Value> {
+        let _busy = Busy::new(&self.shared);
         let auth_cfg = plugin
             .manifest
             .auth
@@ -489,7 +610,7 @@ impl Backend {
     /// quits it. The controlled Chrome has to stop first (one Chrome per profile).
     fn plain_login(&self, url: &str) -> Result<()> {
         {
-            let mut guard = self.instance.lock().unwrap();
+            let mut guard = self.shared.instance.lock().unwrap();
             if let Some(inst) = guard.as_ref() {
                 if !inst.players.lock().unwrap().is_empty() {
                     bail!("close the Chrome players first (login needs to restart Chrome)");
@@ -522,6 +643,7 @@ impl Backend {
 
     /// Checks the login cookies of a plugin in the Chrome profile and records them.
     pub fn login_status(&self, plugin: &Plugin) -> Result<Value> {
+        let _busy = Busy::new(&self.shared);
         let auth_cfg = plugin
             .manifest
             .auth
@@ -843,6 +965,26 @@ mod tests {
         );
         std::fs::write(dir.path().join("DevToolsActivePort"), "9222\n").unwrap();
         assert_eq!(read_devtools_port(dir.path()), None);
+    }
+
+    #[test]
+    fn idle_quit_needs_quiet_since_scheduling() {
+        let mut idle = Idle::default();
+        let g = idle.schedule();
+        assert!(idle.may_quit(g));
+
+        // Work started after scheduling cancels the quit, even once it ends.
+        idle.begin();
+        assert!(!idle.may_quit(g));
+        idle.end();
+        assert!(!idle.may_quit(g));
+
+        // A newer schedule supersedes older ones; nothing quits while busy.
+        idle.begin();
+        let g = idle.schedule();
+        assert!(!idle.may_quit(g));
+        idle.end();
+        assert!(idle.may_quit(g));
     }
 
     #[test]

@@ -100,6 +100,8 @@ tvctl duck status / tvctl duck apps / tvctl duck off
 Player, `auth` and `cast code` commands need the background server. Start it
 with `tvctl server up`; it keeps running, with or without players, until
 `tvctl server down`, which closes all players and quits tvctl's Chrome.
+tvctl's Chrome also quits (and leaves the Dock) a minute after its last player
+closes; the next Chrome player starts it again.
 Nothing else starts or stops it: without a server those commands fail with
 an error telling you to run `tvctl server up`.
 `tvctl server status` shows its state.
