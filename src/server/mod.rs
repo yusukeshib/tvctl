@@ -84,7 +84,8 @@ impl duck::Host for Router {
 /// which processes of an SSH session cannot use: Chrome started by such a
 /// server neither saves new logins nor loads saved ones.
 const SSH_SESSION_WARNING: &str = "the tvctl server was started from an SSH session, so its Chrome cannot \
-     use the macOS keychain: logins are not saved and saved logins are not loaded. Run \
+     use the macOS keychain: logins are not saved and saved logins are not loaded (and phones \
+     may not find its cast receiver). Run \
      `tvctl server down`, then run tvctl from a terminal on this Mac's own screen (not over SSH)";
 
 /// Whether this process belongs to an SSH session.

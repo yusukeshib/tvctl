@@ -222,7 +222,17 @@ struct Video {
 struct Remote {
     id: String,
     name: String,
+    /// Whether the app's "Disconnect" stops the screen when it is the last
+    /// sender (capability `dsdtr`, sent by the YouTube phone apps).
+    disconnect_stops: bool,
 }
+
+/// `disconnectBehavior` of a sender that left to play the video on itself (e.g.
+/// the iOS app when its player is swiped down to the miniplayer).
+const PLAY_ON_PHONE: &str = "MDX_SESSION_DISCONNECT_BEHAVIOR_DISCONNECTED_BY_USER_PLAY_ON_PHONE";
+/// `disconnectBehavior` of a disconnect the screen asked for.
+const SCREEN_INITIATED: &str =
+    "MDX_SESSION_DISCONNECT_BEHAVIOR_DISCONNECTED_BY_USER_SCREEN_INITIATED";
 
 /// Turns sender messages into player commands and reports state.
 struct Controller<'a> {
@@ -379,6 +389,7 @@ impl<'a> Controller<'a> {
 
     fn handle(&mut self, messages: Vec<Message>) {
         for m in messages {
+            super::trace(format_args!("<- {} {}", m.name, m.payload));
             if let Err(e) = self.handle_one(&m) {
                 eprintln!("cast: handling {}: {e:#}", m.name);
             }
@@ -437,7 +448,10 @@ impl<'a> Controller<'a> {
                     let _ = self.play(v, 0.0);
                 }
             }
-            "stopVideo" => self.stop(true),
+            "stopVideo" => {
+                eprintln!("cast: stop requested by the app");
+                self.stop(true);
+            }
             "setAutoplayMode" => self.send(vec![Self::autoplay_unsupported()]),
             _ => {}
         }
@@ -460,6 +474,9 @@ impl<'a> Controller<'a> {
                         .or_else(|| d["clientName"].as_str())
                         .unwrap_or("sender")
                         .to_string(),
+                    disconnect_stops: d["capabilities"]
+                        .as_str()
+                        .is_some_and(|c| c.split(',').any(|c| c == "dsdtr")),
                 })
             })
             .collect();
@@ -470,23 +487,33 @@ impl<'a> Controller<'a> {
         let device = event["deviceId"].as_str();
         let was = |id: &str| self.senders.iter().any(|s| s.id == id);
         let connected = device.filter(|d| now.iter().any(|s| s.id == *d) && !was(d));
-        let disconnected = device.filter(|d| was(d) && !now.iter().any(|s| s.id == *d));
+        let disconnected = device
+            .filter(|d| !now.iter().any(|s| s.id == *d))
+            .and_then(|d| self.senders.iter().find(|s| s.id == d).cloned());
         if let Some(d) = connected {
             let name = now.iter().find(|s| s.id == d).map(|s| s.name.clone());
             eprintln!("cast: connected: {}", name.unwrap_or_default());
         }
-        if let Some(d) = disconnected {
-            let name = self
-                .senders
-                .iter()
-                .find(|s| s.id == d)
-                .map(|s| s.name.clone());
-            eprintln!("cast: disconnected: {}", name.unwrap_or_default());
+        let behavior = event["disconnectBehavior"].as_str().unwrap_or_default();
+        if let Some(d) = &disconnected {
+            eprintln!(
+                "cast: disconnected: {} ({})",
+                d.name,
+                behavior.trim_start_matches("MDX_SESSION_DISCONNECT_BEHAVIOR_")
+            );
         }
-        let explicit = event["ui"].as_str() == Some("true") || event["ui"] == true;
+        // As YouTube's TV app does: the last sender's "Disconnect" stops the
+        // screen, but leaving to play on the phone (or a disconnect the screen
+        // asked for) does not, nor does an implicit disconnect (no `ui`).
+        let ui = event["ui"].as_str() == Some("true") || event["ui"] == true;
+        let stops = disconnected.as_ref().is_some_and(|d| d.disconnect_stops)
+            && ui
+            && behavior != PLAY_ON_PHONE
+            && behavior != SCREEN_INITIATED
+            && now.is_empty();
         self.senders = now;
-        if disconnected.is_some() && explicit && self.senders.is_empty() {
-            // "Disconnect" in the app: stop like a TV app.
+        if stops {
+            eprintln!("cast: stop: the last sender disconnected from the app");
             self.stop(true);
             self.list_id = None;
             self.video_ids.clear();
@@ -537,6 +564,7 @@ impl<'a> Controller<'a> {
             match self.video_ids.iter().position(|v| *v == cur.id) {
                 Some(i) => cur.index = Some(i),
                 None => {
+                    eprintln!("cast: stop: the updated queue no longer has {}", cur.id);
                     self.stop(true);
                     self.current = None;
                 }
@@ -889,9 +917,7 @@ mod tests {
     fn ended_video_advances_and_explicit_disconnect_stops() {
         let host = FakeHost::default();
         let mut c = controller(&host);
-        let sender = json!({"devices": r#"[{"type":"REMOTE_CONTROL","id":"p1","name":"Phone","theme":"cl"}]"#,
-                            "connectionEventDetails": r#"{"deviceId":"p1"}"#});
-        c.handle(vec![msg("loungeStatus", sender)]);
+        c.handle(vec![msg("loungeStatus", phone_connects())]);
         assert_eq!(c.senders.len(), 1);
         c.handle(vec![msg(
             "setPlaylist",
@@ -907,6 +933,46 @@ mod tests {
         assert!(c.player.is_none());
         assert_eq!(c.status, STOPPED);
         assert_eq!(host.calls().last().unwrap(), "close 2");
+    }
+
+    fn phone_connects() -> Value {
+        json!({"devices": r#"[{"type":"REMOTE_CONTROL","id":"p1","name":"Phone","theme":"cl","capabilities":"que,dsdtr,mus"}]"#,
+               "connectionEventDetails": r#"{"deviceId":"p1"}"#})
+    }
+
+    #[test]
+    fn leaving_to_play_on_the_phone_keeps_playing() {
+        // The iOS app sends this when its player is swiped down to the miniplayer.
+        let host = FakeHost::default();
+        let mut c = controller(&host);
+        c.handle(vec![msg("loungeStatus", phone_connects())]);
+        c.handle(vec![msg(
+            "setPlaylist",
+            json!({"listId": "RQ1", "videoId": "a", "currentIndex": "0", "videoIds": "a"}),
+        )]);
+        let gone = json!({"devices": "[]", "connectionEventDetails": format!(
+            r#"{{"deviceId":"p1","ui":"true","disconnectBehavior":"{PLAY_ON_PHONE}"}}"#
+        )});
+        c.handle(vec![msg("loungeStatus", gone)]);
+        assert!(c.senders.is_empty());
+        assert_eq!(c.player, Some(1));
+        assert_eq!(c.status, PLAYING);
+        assert!(!host.calls().iter().any(|c| c.starts_with("close")));
+    }
+
+    #[test]
+    fn disconnect_without_dsdtr_keeps_playing() {
+        let host = FakeHost::default();
+        let mut c = controller(&host);
+        let browser = json!({"devices": r#"[{"type":"REMOTE_CONTROL","id":"w1","name":"Chrome","capabilities":"que,mus"}]"#,
+                             "connectionEventDetails": r#"{"deviceId":"w1"}"#});
+        c.handle(vec![msg("loungeStatus", browser)]);
+        c.play(video("x"), 0.0).unwrap();
+        let gone =
+            json!({"devices": "[]", "connectionEventDetails": r#"{"deviceId":"w1","ui":"true"}"#});
+        c.handle(vec![msg("loungeStatus", gone)]);
+        assert_eq!(c.player, Some(1));
+        assert_eq!(c.status, PLAYING);
     }
 
     #[test]

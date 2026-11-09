@@ -17,6 +17,22 @@ use serde_json::{Value, json};
 use crate::auth;
 use crate::protocol::PlayerAction;
 
+/// Whether `TVCTL_CAST_TRACE` asks for a log of the cast traffic.
+fn tracing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("TVCTL_CAST_TRACE").is_some())
+}
+
+/// Logs a line of cast traffic, with the time, when tracing.
+fn trace(line: std::fmt::Arguments) {
+    if tracing() {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        eprintln!("cast: [{}.{:03}] {line}", t.as_secs(), t.subsec_millis());
+    }
+}
+
 /// Name used before names included the computer's name.
 const OLD_DEFAULT_NAME: &str = "tvctl";
 

@@ -456,6 +456,9 @@ impl Lounge {
         if messages.is_empty() {
             return Ok(());
         }
+        for m in messages {
+            super::trace(format_args!("-> {} {}", m.name, m.payload));
+        }
         let (url, form) = {
             let mut b = self.bind.lock().unwrap();
             if b.sid.is_empty() {
