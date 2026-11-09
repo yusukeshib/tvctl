@@ -3,7 +3,6 @@ description = "Amazon Prime Video (amazon.com and amazon.co.jp /gp/video/detail 
 # The amazon domains also route store pages here; the adapter rejects non-video URLs.
 domains = ["amazon.com", "amazon.co.jp", "primevideo.com"]
 # Playback needs a login and DRM, so only the Chrome backend works.
-backends = ["chrome"]
 actions = ["play", "pause", "toggle", "next", "seek", "subtitles", "audio", "volume", "speed", "quality"]
 examples = ["https://www.amazon.com/gp/video/detail/B0GHXVBQLM", "https://www.amazon.co.jp/gp/video/detail/B09R26WLZ5"]
 notes = [

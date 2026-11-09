@@ -45,35 +45,38 @@ the supported ones.
 ## 3. Basic use
 
 ```sh
-tvctl open '<URL>'          # opens a window; prints {"id": "1", ...}
-tvctl status <ID>           # state, title, current_time/duration (seconds), window
-tvctl close <ID>
+tvctl open '<URL>'          # plays it in the player window; prints {"service", "player", "window"}
+tvctl status                # state, title, current_time/duration (seconds), window
+tvctl close                 # closes the window
 ```
 
-Use the `id` from `open` (or `tvctl list`) in later commands. `open`, player,
+There is one player window. `open` opens it if there is none; otherwise the URL
+replaces what it shows (the window keeps its place, size and fullscreen unless
+window options are given). Player commands take no id; they act on that window.
+`open`, player,
 `auth` and `cast code` commands need the background server; nothing starts it
 implicitly. If one fails with `server is not running`, run `tvctl server up` and
-retry. It keeps running, with or without players, until `tvctl server down`.
+retry. It keeps running, with or without a player, until `tvctl server down`.
 Quote URLs (`'...'`): `?` and `&` break in shells such as zsh.
 
 | Goal | Command |
 |---|---|
-| Play / pause / toggle | `tvctl play <ID>`, `tvctl pause <ID>`, `tvctl toggle <ID>` |
-| Next / previous item | `tvctl next <ID>`, `tvctl prev <ID>` |
-| Seek | `tvctl seek <ID> 1:30` (absolute), `tvctl seek <ID> +30` / `-10` (relative) |
-| Skip | `tvctl forward <ID> 5m`, `tvctl back <ID>` (default 10 s) |
-| Subtitles | `tvctl subtitles <ID> ja`, `on`, `off`, `list` |
-| Audio track | `tvctl audio <ID> list`, `tvctl audio <ID> ja` |
-| Volume | `tvctl volume <ID> 40`, `tvctl mute <ID>`, `tvctl unmute <ID>` |
+| Play / pause / toggle | `tvctl play`, `tvctl pause`, `tvctl toggle` |
+| Next / previous item | `tvctl next`, `tvctl prev` |
+| Seek | `tvctl seek 1:30` (absolute), `tvctl seek +30` / `-10` (relative) |
+| Skip | `tvctl forward 5m`, `tvctl back` (default 10 s) |
+| Subtitles | `tvctl subtitles ja`, `on`, `off`, `list` |
+| Audio track | `tvctl audio list`, `tvctl audio ja` |
+| Volume | `tvctl volume 40`, `tvctl mute`, `tvctl unmute` |
 | Let phones cast YouTube to this Mac | `tvctl cast on` (shows up as `tvctl (<computer name>)` in the YouTube app's Cast menu; `--name` to change), `tvctl cast status`, `tvctl cast code` (for "Link with TV code"), `tvctl cast off` |
-| Lower players while other audio plays | `tvctl duck on` (all other apps) or `tvctl duck on --apps ChatGPT --level 20`; `tvctl duck off`, `tvctl duck status`, `tvctl duck apps` (what plays now) |
-| Speed | `tvctl speed <ID> 1.5` |
-| Quality | `tvctl quality <ID> <value>` (values: `available_qualities` in status) |
-| Window | `tvctl window <ID> --size 1280x720 --position 100,50` |
-| Layout | `tvctl window <ID> --layout left` (left, right, top, bottom, top-left, top-right, bottom-left, bottom-right, center, maximize) |
-| Small corner window | `tvctl window <ID> --layout bottom-right --size 480x270` |
-| Fullscreen | `tvctl fullscreen <ID>` (toggle) or `on` / `off` |
-| See the window | `tvctl screenshot <ID> /tmp/shot.png`, then view the PNG |
+| Lower the player while other audio plays | `tvctl duck on` (all other apps) or `tvctl duck on --apps ChatGPT --level 20`; `tvctl duck off`, `tvctl duck status`, `tvctl duck apps` (what plays now) |
+| Speed | `tvctl speed 1.5` |
+| Quality | `tvctl quality <value>` (values: `available_qualities` in status) |
+| Window | `tvctl window --size 1280x720 --position 100,50` |
+| Layout | `tvctl window --layout left` (left, right, top, bottom, top-left, top-right, bottom-left, bottom-right, center, maximize) |
+| Small corner window | `tvctl window --layout bottom-right --size 480x270` |
+| Fullscreen | `tvctl fullscreen` (toggle) or `on` / `off` |
+| See the window | `tvctl screenshot /tmp/shot.png`, then view the PNG |
 
 `open` accepts the same options up front, e.g.
 `tvctl open '<URL>' --layout center --size 1280x720 --subtitles ja --start 1:00 --paused`.
@@ -92,7 +95,10 @@ that screen region. `tvctl <command> --help` describes every argument.
 - After 60 seconds paused or ended, the window turns black (`window.blackout`
   is true; screenshots are black). Playing, any player command except `status`, or the user
   moving the mouse over the window brings the picture back.
-- If the user closes the window, the player id becomes invalid (`no player`).
+- If the user closes the window, player commands fail with `no player is open`;
+  `tvctl open` makes a new window.
+- A video cast from the YouTube app plays in the same window; `pause`, `seek`,
+  `next`/`prev` etc. from the command line show in the app, and `open` replaces it.
 
 ## 5. Logins (needs the user)
 

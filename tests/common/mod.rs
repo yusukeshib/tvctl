@@ -13,14 +13,13 @@ use serde_json::Value;
 
 pub struct Env {
     pub dir: tempfile::TempDir,
-    /// Data dir (Chrome profile and login state); isolated unless overridden.
+    /// Data dir (Chrome profile); isolated unless overridden.
     pub data: PathBuf,
     /// Base URL of the local site, e.g. `http://127.0.0.1:1234`.
     pub site: String,
 }
 
 const FAKE_JS: &str = include_str!("../fixtures/fake/chrome.js");
-const FAKE_HTML: &str = include_str!("../fixtures/fake/webview.html");
 
 impl Env {
     /// Isolated environment with the fake plugin installed.
@@ -30,21 +29,18 @@ impl Env {
         let plugin = dir.path().join("plugins/fake");
         std::fs::create_dir_all(&plugin).unwrap();
         std::fs::write(plugin.join("chrome.js"), FAKE_JS).unwrap();
-        std::fs::write(plugin.join("webview.html"), FAKE_HTML).unwrap();
         std::fs::write(
             plugin.join("plugin.toml"),
             format!(
                 r#"name = "fake"
 description = "Fake service for tests"
 domains = ["127.0.0.1"]
-backends = ["webview", "chrome"]
 actions = ["play", "pause", "toggle", "next", "previous", "seek", "subtitles", "audio", "volume", "speed", "quality"]
 
 [auth]
 login_url = "{site}/login"
 cookie_url = "{site}"
 logged_in_cookies = ["fake_login"]
-prefer_backend_when_logged_in = "chrome"
 # The fake login page closes its own window; a plain Chrome would keep running.
 login_mode = "controlled"
 "#
@@ -57,11 +53,9 @@ login_mode = "controlled"
         let limited = dir.path().join("plugins/limited");
         std::fs::create_dir_all(&limited).unwrap();
         std::fs::write(limited.join("chrome.js"), FAKE_JS).unwrap();
-        std::fs::write(limited.join("webview.html"), FAKE_HTML).unwrap();
         std::fs::write(
             limited.join("plugin.toml"),
-            "name = \"limited\"\ndomains = [\"localhost\"]\nbackends = [\"webview\", \"chrome\"]\n\
-             actions = [\"play\", \"pause\"]\n[unsupported_actions]\nchrome = [\"pause\"]\n",
+            "name = \"limited\"\ndomains = [\"localhost\"]\nactions = [\"play\"]\n",
         )
         .unwrap();
         Env { dir, site, data }

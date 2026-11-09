@@ -2,7 +2,6 @@ name = "crunchyroll"
 description = "Crunchyroll (crunchyroll.com/watch and /series pages)"
 domains = ["crunchyroll.com"]
 # Playback needs a login and DRM, so only the Chrome backend works.
-backends = ["chrome"]
 actions = ["play", "pause", "toggle", "next", "seek", "subtitles", "audio", "volume", "speed", "quality"]
 examples = ["https://www.crunchyroll.com/watch/G0DUND0K2/the-journeys-end", "https://www.crunchyroll.com/series/GG5H5XQX4/frieren-beyond-journeys-end"]
 notes = [

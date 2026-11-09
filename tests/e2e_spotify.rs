@@ -38,10 +38,7 @@ fn env() -> Option<Env> {
 fn spotify_album_controls() {
     let Some(env) = env() else { return };
     let v = env.ok(&["open", ALBUM, "--layout", "right"]);
-    let id = v["id"].as_str().unwrap().to_string();
-    let id = id.as_str();
     assert_eq!(v["service"], "spotify");
-    assert_eq!(v["backend"], "chrome");
     assert_eq!(p(&v, "logged_in"), true);
     assert_eq!(p(&v, "state"), "playing");
     // The large cover-art view is shown inside the window, not as OS fullscreen.
@@ -51,79 +48,68 @@ fn spotify_album_controls() {
     assert!(first.as_str().is_some_and(|t| !t.is_empty()), "{v}");
 
     // play / pause / toggle
-    assert_eq!(p(&env.ok(&["pause", id]), "state"), "paused");
-    assert_eq!(p(&env.ok(&["play", id]), "state"), "playing");
-    assert_eq!(p(&env.ok(&["toggle", id]), "state"), "paused");
-    assert_eq!(p(&env.ok(&["toggle", id]), "state"), "playing");
+    assert_eq!(p(&env.ok(&["pause"]), "state"), "paused");
+    assert_eq!(p(&env.ok(&["play"]), "state"), "playing");
+    assert_eq!(p(&env.ok(&["toggle"]), "state"), "paused");
+    assert_eq!(p(&env.ok(&["toggle"]), "state"), "playing");
 
     // seeking (the position is reported in whole seconds)
     let t = |args: &[&str]| f(&p(&env.ok(args), "current_time"));
-    assert!((t(&["seek", id, "2:00"]) - 120.0).abs() <= 1.0);
-    assert!((t(&["back", id]) - 110.0).abs() <= 2.0);
-    assert!((t(&["forward", id, "30"]) - 140.0).abs() <= 2.0);
+    assert!((t(&["seek", "2:00"]) - 120.0).abs() <= 1.0);
+    assert!((t(&["back"]) - 110.0).abs() <= 2.0);
+    assert!((t(&["forward", "30"]) - 140.0).abs() <= 2.0);
     eventually("position to advance", Duration::from_secs(10), || {
-        f(&p(&env.ok(&["status", id]), "current_time")) > 140.0
+        f(&p(&env.ok(&["status"]), "current_time")) > 140.0
     });
 
     // volume and mute (including mute right after a volume change)
-    assert_eq!(p(&env.ok(&["volume", id, "30"]), "volume"), 30);
-    let m = env.ok(&["mute", id]);
+    assert_eq!(p(&env.ok(&["volume", "30"]), "volume"), 30);
+    let m = env.ok(&["mute"]);
     assert_eq!(
         (p(&m, "muted"), p(&m, "volume")),
         (Value::Bool(true), Value::from(0))
     );
-    let u = env.ok(&["unmute", id]);
+    let u = env.ok(&["unmute"]);
     assert_eq!(
         (p(&u, "muted"), p(&u, "volume")),
         (Value::Bool(false), Value::from(30))
     );
-    assert_eq!(p(&env.ok(&["volume", id, "60"]), "volume"), 60);
-    assert_eq!(p(&env.ok(&["mute", id]), "muted"), true);
-    assert_eq!(p(&env.ok(&["unmute", id]), "volume"), 60);
+    assert_eq!(p(&env.ok(&["volume", "60"]), "volume"), 60);
+    assert_eq!(p(&env.ok(&["mute"]), "muted"), true);
+    assert_eq!(p(&env.ok(&["unmute"]), "volume"), 60);
 
     // next / previous track
-    env.ok(&["next", id]);
+    env.ok(&["next"]);
     eventually("next track", Duration::from_secs(10), || {
-        p(&env.ok(&["status", id]), "title") != first
+        p(&env.ok(&["status"]), "title") != first
     });
-    env.ok(&["prev", id]);
+    env.ok(&["prev"]);
     eventually("previous track", Duration::from_secs(10), || {
-        p(&env.ok(&["status", id]), "title") == first
+        p(&env.ok(&["status"]), "title") == first
     });
 
     // the cover view survives track changes and window layout changes
-    assert_eq!(p(&env.ok(&["status", id]), "cover_view"), true);
-    let w = env.ok(&[
-        "window",
-        id,
-        "--layout",
-        "bottom-right",
-        "--size",
-        "640x480",
-    ]);
+    assert_eq!(p(&env.ok(&["status"]), "cover_view"), true);
+    let w = env.ok(&["window", "--layout", "bottom-right", "--size", "640x480"]);
     assert_eq!(p(&w, "cover_view"), true);
     assert_eq!(f(&w["window"]["size"]["width"]), 640.0);
 
     // unsupported actions are reported, not ignored
-    for args in [
-        ["subtitles", id, "ja"],
-        ["quality", id, "hd720"],
-        ["speed", id, "1.5"],
-    ] {
+    for args in [["subtitles", "ja"], ["quality", "hd720"], ["speed", "1.5"]] {
         let e = env.err(&args);
         assert!(
             e.contains(&format!("{} is not supported by spotify", args[0])),
             "{args:?}: {e}"
         );
     }
-    let e = env.err(&["audio", id, "ja"]);
+    let e = env.err(&["audio", "ja"]);
     assert!(e.contains("audio is not supported by spotify"), "{e}");
 
     let shot = env.path("spotify.png");
-    env.ok(&["screenshot", id, shot.to_str().unwrap()]);
+    env.ok(&["screenshot", shot.to_str().unwrap()]);
     assert!(is_png(&shot));
-    env.ok(&["pause", id]);
-    env.ok(&["close", id]);
+    env.ok(&["pause"]);
+    env.ok(&["close"]);
 }
 
 #[test]
@@ -141,10 +127,10 @@ fn spotify_track_links() {
         "{v}"
     );
     assert!((f(&p(&v, "duration")) - 213.0).abs() <= 1.0);
-    env.ok(&["close", v["id"].as_str().unwrap()]);
+    env.ok(&["close"]);
     // --paused and --start are honored.
     let v = env.ok(&["open", TRACK, "--paused", "--start", "1:00"]);
     assert_eq!(p(&v, "state"), "paused");
     assert!((f(&p(&v, "current_time")) - 60.0).abs() <= 1.0);
-    env.ok(&["close", v["id"].as_str().unwrap()]);
+    env.ok(&["close"]);
 }

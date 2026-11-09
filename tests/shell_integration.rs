@@ -1,5 +1,4 @@
 //! Shell integration without opening windows or starting the real server.
-use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -70,76 +69,33 @@ fn screenshot_paths_with_spaces_are_completed() {
     let out = cli(dir.path())
         .current_dir(dir.path())
         .env("TVCTL_COMPLETE", "bash")
-        .env("_CLAP_COMPLETE_INDEX", "3")
+        .env("_CLAP_COMPLETE_INDEX", "2")
         .env("_CLAP_COMPLETE_SPACE", "false")
-        .args(["--", "tvctl", "screenshot", "1", "my"])
+        .args(["--", "tvctl", "screenshot", "my"])
         .output()
         .unwrap();
     assert_eq!(text(out).trim(), "my screenshot.png");
 }
 
+/// Commands take no player id, so completion never contacts the server.
 #[test]
-fn player_completion_only_sends_list_and_includes_titles_in_zsh() {
+fn completion_does_not_contact_the_server() {
     let dir = temp();
     let listener = UnixListener::bind(dir.path().join("tvctl.sock")).unwrap();
-    let server = std::thread::spawn(move || {
-        for _ in 0..2 {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = String::new();
-            BufReader::new(stream.try_clone().unwrap())
-                .read_line(&mut request)
-                .unwrap();
-            assert_eq!(
-                serde_json::from_str::<serde_json::Value>(&request).unwrap(),
-                serde_json::json!({"cmd": "list"})
-            );
-            writeln!(
-                stream,
-                "{}",
-                serde_json::json!({
-                    "ok": true,
-                    "result": {"players": [
-                        {"id": "1", "service": "youtube", "title": "A video"},
-                        {"id": "12", "service": "spotify", "title": "A song"},
-                        {"id": "2", "service": "netflix", "title": "A movie"}
-                    ]}
-                })
-            )
-            .unwrap();
-        }
-    });
-    let bash = text(completion(dir.path(), "bash", &["tvctl", "pause", "1"]));
-    assert_eq!(bash.split_whitespace().collect::<Vec<_>>(), ["1", "12"]);
-    let zsh = text(completion(
-        dir.path(),
-        "zsh",
-        &["tvctl", "window", "--layout", "left", "1"],
-    ));
-    assert!(zsh.contains("1:youtube A video"), "{zsh:?}");
-    assert!(zsh.contains("12:spotify A song"), "{zsh:?}");
-    assert!(!zsh.contains("netflix"));
-    server.join().unwrap();
-}
-
-#[test]
-fn unresponsive_server_does_not_stall_completion() {
-    let dir = temp();
-    let listener = UnixListener::bind(dir.path().join("tvctl.sock")).unwrap();
-    let (release, wait) = std::sync::mpsc::channel();
-    let server = std::thread::spawn(move || {
-        let (_stream, _) = listener.accept().unwrap();
-        let _ = wait.recv_timeout(Duration::from_secs(3));
-    });
+    listener.set_nonblocking(true).unwrap();
     let start = Instant::now();
-    let out = completion(dir.path(), "bash", &["tvctl", "pause", "1"]);
-    let elapsed = start.elapsed();
-    release.send(()).unwrap();
-    server.join().unwrap();
-    assert!(text(out).is_empty());
+    for words in [
+        &["tvctl", "pause", ""][..],
+        &["tvctl", "window", "--layout", "left", ""][..],
+    ] {
+        completion(dir.path(), "bash", words);
+        completion(dir.path(), "zsh", words);
+    }
     assert!(
-        elapsed < Duration::from_secs(2),
-        "completion took {elapsed:?}"
+        listener.accept().is_err(),
+        "completion connected to the server"
     );
+    assert!(start.elapsed() < Duration::from_secs(10));
 }
 
 #[test]

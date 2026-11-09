@@ -1,72 +1,26 @@
-//! The player server. Accepts requests on a Unix socket and routes them to the
-//! backend that owns each player. Plugins decide which backend a URL uses.
+//! The player server. Accepts requests on a Unix socket and drives the one
+//! player window (in tvctl's Chrome), the cast receiver and ducking. Plugins
+//! decide how a URL is played.
 
 mod chrome;
-mod webview;
 
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use crate::auth;
-use crate::cast;
+use crate::cast::{self, HostError};
 use crate::client;
 use crate::duck;
-use crate::plugin::{BackendKind, Plugin, Registry};
+use crate::plugin::{Plugin, Registry};
 use crate::protocol::{PlayerAction, Request, Response, WindowOpts};
 
-pub type Reply = std::sync::mpsc::Sender<Result<Value, String>>;
-
-/// Player ids shared by all backends.
-#[derive(Default)]
-pub struct Players {
-    next: AtomicU64,
-    /// Player id -> (backend, plugin name).
-    owners: Mutex<HashMap<String, (BackendKind, String)>>,
-}
-
-impl Players {
-    pub fn allocate(&self, backend: BackendKind, plugin: &str) -> String {
-        let id = (self.next.fetch_add(1, Ordering::SeqCst) + 1).to_string();
-        self.owners
-            .lock()
-            .unwrap()
-            .insert(id.clone(), (backend, plugin.to_string()));
-        id
-    }
-
-    pub fn remove(&self, id: &str) {
-        self.owners.lock().unwrap().remove(id);
-    }
-
-    fn owner(&self, id: &str) -> Result<BackendKind, String> {
-        self.entry(id).map(|(b, _)| b)
-    }
-
-    fn entry(&self, id: &str) -> Result<(BackendKind, String), String> {
-        let owners = self.owners.lock().unwrap();
-        owners.get(id).cloned().ok_or_else(|| {
-            let mut ids: Vec<&String> = owners.keys().collect();
-            ids.sort_by_key(|s| s.parse::<u64>().unwrap_or(u64::MAX));
-            format!("no player with id {id:?} (open players: {ids:?})")
-        })
-    }
-
-    fn count(&self) -> usize {
-        self.owners.lock().unwrap().len()
-    }
-}
+pub use chrome::Gone;
 
 struct Router {
     registry: Arc<Registry>,
-    players: Arc<Players>,
-    webview: webview::Handle,
     chrome: chrome::Backend,
     /// Started from an SSH session (see `SSH_SESSION_WARNING`).
     ssh_session: bool,
@@ -74,45 +28,51 @@ struct Router {
     cast: cast::Cast,
 }
 
+fn host_error(e: anyhow::Error) -> HostError {
+    match e.downcast_ref::<Gone>() {
+        Some(_) => HostError::Gone,
+        None => HostError::Failed(err(e)),
+    }
+}
+
 impl cast::Host for Router {
-    fn open(&self, url: &str, start: f64, window: WindowOpts) -> Result<Value, String> {
-        self.handle(Request::Open {
-            url: url.to_string(),
-            start: Some(start),
-            paused: false,
-            subtitles: None,
-            window,
-            backend: None,
-        })
+    fn open(&self, url: &str, start: f64, expect: Option<u64>) -> Result<(u64, Value), HostError> {
+        let (plugin, url) = self
+            .registry
+            .for_url(url)
+            .map_err(|e| HostError::Failed(err(e)))?;
+        let action = json!({
+            "action": "open",
+            "url": url.as_str(),
+            "start": start,
+            "paused": false,
+            "subtitles": null,
+        });
+        self.chrome
+            .open(plugin, action, &WindowOpts::default(), expect)
+            .map_err(host_error)
     }
 
-    fn player(&self, id: &str, action: PlayerAction) -> Result<Value, String> {
-        self.handle(Request::Player {
-            id: id.to_string(),
-            action,
-        })
+    fn player(&self, token: u64, action: PlayerAction) -> Result<Value, HostError> {
+        let action = serde_json::to_value(action).expect("serializable");
+        self.chrome.action(Some(token), action).map_err(host_error)
     }
 
-    fn close(&self, id: &str) -> Result<Value, String> {
-        self.handle(Request::Close { id: id.to_string() })
+    fn close(&self, token: u64) -> Result<(), HostError> {
+        self.chrome
+            .close(Some(token))
+            .map(|_| ())
+            .map_err(host_error)
     }
 }
 
 impl duck::Host for Router {
-    fn player_count(&self) -> usize {
-        self.players.count()
+    fn has_player(&self) -> bool {
+        self.chrome.has_player()
     }
 
-    fn run_in_players(&self, script: &str) {
-        if let Err(e) = self.webview.call(
-            webview::Command::RunInAll {
-                script: script.to_string(),
-            },
-            Duration::from_secs(2),
-        ) {
-            eprintln!("duck: webview players: {e}");
-        }
-        self.chrome.run_in_all(script);
+    fn run_in_player(&self, script: &str) {
+        self.chrome.run_in_player(script);
     }
 
     fn chrome_pid(&self) -> Option<i32> {
@@ -139,8 +99,8 @@ fn err(e: anyhow::Error) -> String {
 }
 
 impl Router {
-    /// Handles a request; Chrome logins and Chrome players of a server started
-    /// over SSH get a warning (logins there do not persist, so `auth login` is
+    /// Handles a request; logins and player responses of a server started over
+    /// SSH get a warning (logins there do not persist, so `auth login` is
     /// refused).
     fn handle(&self, req: Request) -> Result<Value, String> {
         if !self.ssh_session {
@@ -153,7 +113,7 @@ impl Router {
             _ => return self.handle_inner(req),
         };
         let mut v = self.handle_inner(req)?;
-        if (warn || v["backend"] == "chrome")
+        if (warn || v.get("player").is_some())
             && let Some(obj) = v.as_object_mut()
         {
             obj.insert("warning".into(), SSH_SESSION_WARNING.into());
@@ -166,18 +126,13 @@ impl Router {
             Request::Ping => Ok(self.info()),
             Request::Shutdown => {
                 self.chrome.shutdown();
-                self.webview
-                    .call(webview::Command::Shutdown, Duration::from_secs(5))
-            }
-            Request::List => {
-                let mut list = self
-                    .webview
-                    .call(webview::Command::List, Duration::from_secs(5))?;
-                if let Some(items) = list.as_array_mut() {
-                    items.extend(self.chrome.list());
-                    items.sort_by_key(|v| v["id"].as_str().and_then(|s| s.parse::<u64>().ok()));
-                }
-                Ok(json!({ "players": list }))
+                // The reply is sent before the process exits.
+                std::thread::spawn(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    let _ = std::fs::remove_file(client::socket_path());
+                    std::process::exit(0);
+                });
+                Ok(json!({ "stopped": true }))
             }
             Request::Open {
                 url,
@@ -185,10 +140,8 @@ impl Router {
                 paused,
                 subtitles,
                 window,
-                backend,
             } => {
                 let (plugin, url) = self.registry.for_url(&url).map_err(err)?;
-                let backend = choose_backend(plugin, backend, auth::is_logged_in(plugin.name()))?;
                 let action = json!({
                     "action": "open",
                     "url": url.as_str(),
@@ -196,75 +149,16 @@ impl Router {
                     "paused": paused,
                     "subtitles": subtitles,
                 });
-                let id = self.players.allocate(backend, plugin.name());
-                match backend {
-                    // On failure the window stays open (showing the error) and keeps its id.
-                    BackendKind::Webview => self.webview.call(
-                        webview::Command::Open {
-                            id,
-                            plugin: Box::new(plugin.clone()),
-                            action,
-                            window: Box::new(window),
-                        },
-                        Duration::from_secs(40),
-                    ),
-                    BackendKind::Chrome => {
-                        self.chrome.open(&id, plugin, action, &window).map_err(err)
-                    }
-                }
+                self.chrome
+                    .open(plugin, action, &window, None)
+                    .map(|(_, v)| v)
+                    .map_err(err)
             }
-            Request::Player { id, action } => {
-                let action = serde_json::to_value(action).expect("serializable");
-                let (backend, plugin) = self.players.entry(&id)?;
-                let name = action["action"].as_str().unwrap_or_default();
-                if let Some(m) = self.registry.get(&plugin).map(|p| &p.manifest)
-                    && !m.supports(name, backend)
-                {
-                    let supported: Vec<&str> = std::iter::once("status")
-                        .chain(
-                            m.actions
-                                .iter()
-                                .map(String::as_str)
-                                .filter(|a| m.supports(a, backend)),
-                        )
-                        .collect();
-                    return Err(format!(
-                        "{name} is not supported by {plugin} ({backend:?} backend); supported: {}",
-                        supported.join(", ")
-                    ));
-                }
-                match backend {
-                    BackendKind::Webview => self.webview.call(
-                        webview::Command::Player { id, action },
-                        Duration::from_secs(15),
-                    ),
-                    BackendKind::Chrome => self.chrome.action(&id, action).map_err(err),
-                }
-            }
-            Request::Window { id, opts } => match self.players.owner(&id)? {
-                BackendKind::Webview => self.webview.call(
-                    webview::Command::Window { id, opts },
-                    Duration::from_secs(15),
-                ),
-                BackendKind::Chrome => self.chrome.window(&id, &opts).map_err(err),
-            },
-            Request::Close { id } => match self.players.owner(&id)? {
-                BackendKind::Webview => self
-                    .webview
-                    .call(webview::Command::Close { id }, Duration::from_secs(5)),
-                BackendKind::Chrome => self.chrome.close(&id).map_err(err),
-            },
-            Request::Screenshot { id, path } => match self.players.owner(&id)? {
-                BackendKind::Webview => self.webview.call(
-                    webview::Command::Screenshot { id, path },
-                    Duration::from_secs(15),
-                ),
-                BackendKind::Chrome => self.chrome.screenshot(&id, &path).map_err(err),
-            },
-            Request::Eval { id, script } => match self.players.owner(&id)? {
-                BackendKind::Webview => Err("__eval is only available for chrome players".into()),
-                BackendKind::Chrome => self.chrome.eval(&id, &script).map_err(err),
-            },
+            Request::Player { action } => self.player(action),
+            Request::Window { opts } => self.chrome.window(&opts).map_err(err),
+            Request::Close => self.chrome.close(None).map_err(err),
+            Request::Screenshot { path } => self.chrome.screenshot(&path).map_err(err),
+            Request::Eval { script } => self.chrome.eval(&script).map_err(err),
             Request::AuthLogin { service, site } => self
                 .chrome
                 .login(self.auth_plugin(&service)?, site.as_deref())
@@ -294,12 +188,43 @@ impl Router {
         }
     }
 
+    /// A player command from the command line. `next`/`prev` on a cast video
+    /// move through the cast queue, so the YouTube app follows.
+    fn player(&self, action: PlayerAction) -> Result<Value, String> {
+        let (generation, plugin) = self.chrome.current().ok_or(Gone::NoPlayer.to_string())?;
+        let value = serde_json::to_value(&action).expect("serializable");
+        let name = value["action"].as_str().unwrap_or_default();
+        if let Some(m) = self.registry.get(&plugin).map(|p| &p.manifest)
+            && !m.supports(name)
+        {
+            let supported: Vec<&str> = std::iter::once("status")
+                .chain(m.actions.iter().map(String::as_str))
+                .collect();
+            return Err(format!(
+                "{name} is not supported by {plugin}; supported: {}",
+                supported.join(", ")
+            ));
+        }
+        let step = match action {
+            PlayerAction::Next => Some(1),
+            PlayerAction::Previous => Some(-1),
+            _ => None,
+        };
+        if let Some(step) = step
+            && self.cast.owns(generation)
+            && let Some(result) = self.cast.step(step)
+        {
+            return result;
+        }
+        self.chrome.action(None, value).map_err(err)
+    }
+
     fn info(&self) -> Value {
         json!({
             "pid": std::process::id(),
             "socket": client::socket_path(),
             "log": client::log_path(),
-            "players": self.players.count(),
+            "player": self.chrome.summary(),
             "ssh_session": self.ssh_session,
         })
     }
@@ -316,42 +241,8 @@ impl Router {
     }
 }
 
-/// Forced backend if given; else the plugin's logged-in preference when the user
-/// has logged in; else the plugin's first backend.
-fn choose_backend(
-    plugin: &Plugin,
-    forced: Option<BackendKind>,
-    logged_in: bool,
-) -> Result<BackendKind, String> {
-    let supported = &plugin.manifest.backends;
-    if let Some(b) = forced {
-        return if supported.contains(&b) {
-            Ok(b)
-        } else {
-            Err(format!(
-                "{} does not support the {b:?} backend (supported: {supported:?})",
-                plugin.name()
-            ))
-        };
-    }
-    if let Some(b) = plugin
-        .manifest
-        .auth
-        .as_ref()
-        .and_then(|a| a.prefer_backend_when_logged_in)
-        && supported.contains(&b)
-        && logged_in
-    {
-        return Ok(b);
-    }
-    supported
-        .first()
-        .copied()
-        .ok_or_else(|| "plugin has no backends".into())
-}
-
 /// Runs the server until a `Shutdown` request (`tvctl server down`). Opening or
-/// closing players never starts or stops it.
+/// closing the player never starts or stops it.
 pub fn run() -> Result<()> {
     let socket = client::socket_path();
     if client::is_running() {
@@ -361,15 +252,9 @@ pub fn run() -> Result<()> {
     let _ = std::fs::remove_file(&socket);
     let listener =
         UnixListener::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
-    let players = Arc::new(Players::default());
-
-    let (event_loop, webview) = webview::create(registry.clone(), players.clone())?;
-    let chrome = chrome::Backend::new(players.clone());
     let router = Arc::new(Router {
         registry,
-        players,
-        webview,
-        chrome,
+        chrome: chrome::Backend::new(),
         ssh_session: in_ssh_session(),
         duck: duck::Duck::new(duck::load()),
         cast: cast::Cast::new(cast::load()),
@@ -378,18 +263,16 @@ pub fn run() -> Result<()> {
     std::thread::spawn(move || duck::run(&duck_host.duck, &*duck_host));
     let cast_host = router.clone();
     std::thread::spawn(move || cast::run(&cast_host.cast, &*cast_host));
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let router = router.clone();
-            std::thread::spawn(move || handle_connection(stream, &router));
-        }
-    });
     eprintln!(
         "tvctl server listening on {} (pid {})",
         socket.display(),
         std::process::id()
     );
-    webview::run(event_loop)
+    for stream in listener.incoming().flatten() {
+        let router = router.clone();
+        std::thread::spawn(move || handle_connection(stream, &router));
+    }
+    Ok(())
 }
 
 fn handle_connection(stream: UnixStream, router: &Router) {
@@ -406,89 +289,4 @@ fn handle_connection(stream: UnixStream, router: &Router) {
     let mut out = serde_json::to_string(&Response::from(result)).expect("serializable");
     out.push('\n');
     let _ = stream.write_all(out.as_bytes());
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::BTreeMap;
-
-    fn plugin(toml: &str, files: &[&str]) -> Plugin {
-        let mut m: BTreeMap<String, String> = files
-            .iter()
-            .map(|f| (f.to_string(), String::new()))
-            .collect();
-        m.insert("plugin.toml".into(), toml.into());
-        Plugin::from_files(m, "test".into()).unwrap()
-    }
-
-    const BOTH: &str = "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\", \"chrome\"]\nactions = [\"play\"]\n";
-    const AUTH: &str = "[auth]\nlogin_url = \"https://x.com/l\"\ncookie_url = \"https://x.com\"\nlogged_in_cookies = [\"s\"]\nprefer_backend_when_logged_in = \"chrome\"\n";
-
-    #[test]
-    fn backend_defaults_to_first() {
-        let p = plugin(BOTH, &["webview.html", "chrome.js"]);
-        assert_eq!(choose_backend(&p, None, false), Ok(BackendKind::Webview));
-        // Without an [auth] preference, login state does not matter.
-        assert_eq!(choose_backend(&p, None, true), Ok(BackendKind::Webview));
-    }
-
-    #[test]
-    fn backend_follows_login_preference() {
-        let p = plugin(&format!("{BOTH}{AUTH}"), &["webview.html", "chrome.js"]);
-        assert_eq!(choose_backend(&p, None, false), Ok(BackendKind::Webview));
-        assert_eq!(choose_backend(&p, None, true), Ok(BackendKind::Chrome));
-        // A forced backend wins over the preference.
-        assert_eq!(
-            choose_backend(&p, Some(BackendKind::Webview), true),
-            Ok(BackendKind::Webview)
-        );
-    }
-
-    #[test]
-    fn forced_backend_must_be_supported() {
-        let p = plugin(
-            "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\"]\nactions = [\"play\"]\n",
-            &["webview.html"],
-        );
-        assert_eq!(
-            choose_backend(&p, Some(BackendKind::Webview), false),
-            Ok(BackendKind::Webview)
-        );
-        let e = choose_backend(&p, Some(BackendKind::Chrome), false).unwrap_err();
-        assert!(e.contains("does not support"), "{e}");
-    }
-
-    #[test]
-    fn builtin_youtube_uses_chrome() {
-        let r = Registry::load().unwrap();
-        let yt = r.get("youtube").unwrap();
-        assert_eq!(choose_backend(yt, None, false), Ok(BackendKind::Chrome));
-        assert_eq!(choose_backend(yt, None, true), Ok(BackendKind::Chrome));
-    }
-
-    #[test]
-    fn player_ids_are_unique_and_owned() {
-        let players = Players::default();
-        let a = players.allocate(BackendKind::Webview, "x");
-        let b = players.allocate(BackendKind::Chrome, "y");
-        assert_ne!(a, b);
-        assert_eq!(players.owner(&a), Ok(BackendKind::Webview));
-        assert_eq!(players.owner(&b), Ok(BackendKind::Chrome));
-        assert_eq!(players.count(), 2);
-        players.remove(&a);
-        let e = players.owner(&a).unwrap_err();
-        assert!(
-            e.contains("no player") && e.contains(&format!("{b:?}")),
-            "{e}"
-        );
-        assert_eq!(players.count(), 1);
-        // Ids are never reused.
-        let c = players.allocate(BackendKind::Webview, "x");
-        assert_eq!(
-            players.entry(&c),
-            Ok((BackendKind::Webview, "x".to_string()))
-        );
-        assert!(c != a && c != b);
-    }
 }

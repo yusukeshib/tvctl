@@ -1,10 +1,12 @@
-//! Chrome backend: plays in app windows of the user's Google Chrome (dedicated
-//! profile, so logins persist and DRM works), driven through the DevTools
-//! Protocol. Runs entirely off the GUI thread.
+//! Chrome backend: plays in one app window of the user's Google Chrome
+//! (dedicated profile, so logins persist and DRM works), driven through the
+//! DevTools Protocol. `open` shows a URL in that window, replacing what it
+//! showed; the window is created when there is none.
 
-use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,41 +14,94 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
-use super::Players;
 use crate::auth;
 use crate::blackout;
 use crate::cdp::{CLOSED_EVENT, Cdp};
 use crate::duck;
 use crate::layout::{self, Rect};
 use crate::plugin::{LoginMode, Plugin};
-use crate::protocol::{Switch, WindowOpts};
+use crate::protocol::WindowOpts;
 
 const DEFAULT_SIZE: (f64, f64) = (960.0, 540.0);
 
-/// How long tvctl's Chrome keeps running without players and other work: the
+/// How long tvctl's Chrome keeps running without a player and other work: the
 /// next player opens fast, and an unused Chrome leaves the Dock afterwards.
 const IDLE_QUIT: Duration = Duration::from_secs(60);
 
+/// A player command found no player, or the player shows other content than
+/// the caller expected (see `Backend::open`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Gone {
+    NoPlayer,
+    Replaced,
+}
+
+impl fmt::Display for Gone {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Gone::NoPlayer => write!(f, "no player is open (open one with `tvctl open <URL>`)"),
+            Gone::Replaced => write!(f, "the player shows something else now"),
+        }
+    }
+}
+
+impl std::error::Error for Gone {}
+
+/// What the window shows.
+struct Content {
+    plugin: Arc<Plugin>,
+    /// `Page.addScriptToEvaluateOnNewDocument` id of the plugin's adapter.
+    adapter_script: String,
+    /// Identifies this content: every `open` gets a new generation.
+    generation: u64,
+    last_status: Value,
+}
+
+/// The player window.
 struct ChromePlayer {
-    plugin: Plugin,
     target_id: String,
     session_id: String,
-    last_status: Mutex<Value>,
+    content: Mutex<Content>,
 }
+
+impl ChromePlayer {
+    fn plugin(&self) -> Arc<Plugin> {
+        self.content.lock().unwrap().plugin.clone()
+    }
+
+    fn generation(&self) -> u64 {
+        self.content.lock().unwrap().generation
+    }
+}
+
+type Slot = Arc<Mutex<Option<Arc<ChromePlayer>>>>;
 
 struct Instance {
     cdp: Cdp,
     chrome: PathBuf,
     profile: PathBuf,
-    players: Arc<Mutex<HashMap<String, Arc<ChromePlayer>>>>,
+    player: Slot,
+}
+
+impl Instance {
+    fn player(&self) -> Option<Arc<ChromePlayer>> {
+        self.player.lock().unwrap().clone()
+    }
 }
 
 pub struct Backend {
-    players: Arc<Players>,
     shared: Arc<Shared>,
-    /// Serializes window creation so new targets can be matched to requests.
+    /// Serializes `open` (one window) and window creation (so new targets can
+    /// be matched to requests).
     open_lock: Mutex<()>,
+    next_generation: AtomicU64,
+    /// Size and position of the window when it last reported them (not in
+    /// fullscreen); a new window opens there.
+    last_frame: Mutex<Option<Frame>>,
 }
+
+/// Video area size and window position.
+type Frame = ((f64, f64), (f64, f64));
 
 /// State that the event watcher and the idle timers use too.
 #[derive(Default)]
@@ -58,7 +113,7 @@ struct Shared {
 /// Work in progress on Chrome. Lock order: `Shared::instance`, then `Shared::idle`.
 #[derive(Default)]
 struct Idle {
-    /// Operations that use Chrome without (yet) owning a player: `open`, logins.
+    /// Operations that use Chrome without (yet) owning the player: `open`, logins.
     busy: usize,
     /// Bumped by every operation and every scheduled quit; a scheduled quit only
     /// runs if nothing happened since.
@@ -97,14 +152,14 @@ impl Shared {
         });
     }
 
-    /// `schedule_quit` when Chrome has no players.
+    /// `schedule_quit` when Chrome has no player.
     fn schedule_quit_if_unused(self: &Arc<Self>) {
         let unused = self
             .instance
             .lock()
             .unwrap()
             .as_ref()
-            .is_some_and(|inst| inst.players.lock().unwrap().is_empty());
+            .is_some_and(|inst| inst.player().is_none());
         if unused {
             self.schedule_quit();
         }
@@ -118,7 +173,7 @@ impl Shared {
         let Some(inst) = guard.as_ref() else {
             return;
         };
-        if !inst.players.lock().unwrap().is_empty() {
+        if inst.player().is_some() {
             return;
         }
         let inst = guard.take().unwrap();
@@ -193,11 +248,12 @@ fn read_devtools_port(profile: &Path) -> Option<String> {
 }
 
 impl Backend {
-    pub fn new(players: Arc<Players>) -> Backend {
+    pub fn new() -> Backend {
         Backend {
-            players,
             shared: Arc::default(),
             open_lock: Mutex::new(()),
+            next_generation: AtomicU64::new(0),
+            last_frame: Mutex::new(None),
         }
     }
 
@@ -263,42 +319,33 @@ impl Backend {
             cdp,
             chrome,
             profile,
-            players: Arc::default(),
+            player: Arc::default(),
         })
     }
 
-    /// Removes players whose windows were closed, or all of them if Chrome exits.
+    /// Forgets the player when its window is closed or Chrome exits.
     fn watch_events(&self, inst: &Arc<Instance>) {
         let events = inst.cdp.subscribe();
-        let players = inst.players.clone();
-        let registry = self.players.clone();
+        let slot = inst.player.clone();
         let shared = self.shared.clone();
         std::thread::spawn(move || {
             for ev in events {
                 match ev["method"].as_str() {
                     Some("Target.targetDestroyed") => {
                         let target = ev["params"]["targetId"].as_str().unwrap_or_default();
-                        let mut map = players.lock().unwrap();
-                        let gone: Vec<String> = map
-                            .iter()
-                            .filter(|(_, p)| p.target_id == target)
-                            .map(|(id, _)| id.clone())
-                            .collect();
-                        let closed_player = !gone.is_empty();
-                        for id in gone {
-                            map.remove(&id);
-                            registry.remove(&id);
+                        let mut guard = slot.lock().unwrap();
+                        let closed = guard.as_ref().is_some_and(|p| p.target_id == target);
+                        if closed {
+                            *guard = None;
                         }
-                        drop(map);
-                        // The user closed a player window.
-                        if closed_player {
+                        drop(guard);
+                        // The user closed the player window.
+                        if closed {
                             shared.schedule_quit_if_unused();
                         }
                     }
                     Some(CLOSED_EVENT) => {
-                        for (id, _) in players.lock().unwrap().drain() {
-                            registry.remove(&id);
-                        }
+                        *slot.lock().unwrap() = None;
                         break;
                     }
                     _ => {}
@@ -307,27 +354,36 @@ impl Backend {
         });
     }
 
-    fn player(&self, id: &str) -> Result<(Arc<Instance>, Arc<ChromePlayer>)> {
+    /// The player, if it shows content `expect` (any content when None).
+    fn player(&self, expect: Option<u64>) -> Result<(Arc<Instance>, Arc<ChromePlayer>), Gone> {
         let inst = self
             .shared
             .instance
             .lock()
             .unwrap()
             .clone()
-            .ok_or_else(|| anyhow!("no player with id {id:?}"))?;
-        let p = inst
-            .players
-            .lock()
-            .unwrap()
-            .get(id)
-            .cloned()
-            .ok_or_else(|| anyhow!("no player with id {id:?}"))?;
+            .ok_or(Gone::NoPlayer)?;
+        let p = inst.player().ok_or(Gone::NoPlayer)?;
+        if expect.is_some_and(|g| g != p.generation()) {
+            return Err(Gone::Replaced);
+        }
         Ok((inst, p))
     }
 
+    /// The content generation and plugin name of the player, if any.
+    pub fn current(&self) -> Option<(u64, String)> {
+        let (_, p) = self.player(None).ok()?;
+        let c = p.content.lock().unwrap();
+        Some((c.generation, c.plugin.name().to_string()))
+    }
+
+    pub fn has_player(&self) -> bool {
+        self.player(None).is_ok()
+    }
+
     /// Opens a new Chrome window for `url` and returns its page target id.
+    /// Callers hold `open_lock`.
     fn new_window(&self, inst: &Instance, url: &str, app: bool) -> Result<String> {
-        let _guard = self.open_lock.lock().unwrap();
         let events = inst.cdp.subscribe();
         let window_arg = if app {
             format!("--app={url}")
@@ -351,36 +407,118 @@ impl Backend {
         .context("Chrome did not open a window")
     }
 
+    /// Shows `action.url` in the player window (created if there is none),
+    /// replacing what it showed, and runs the adapter's `open`. Returns the new
+    /// content's generation with the response; player commands given that
+    /// generation fail with `Gone::Replaced` once something else is opened.
+    /// With `expect`, it only replaces content `expect` (checked under the
+    /// open lock, so a concurrent `open` cannot be overwritten).
     pub fn open(
         &self,
-        id: &str,
         plugin: &Plugin,
         action: Value,
         opts: &WindowOpts,
-    ) -> Result<Value> {
+        expect: Option<u64>,
+    ) -> Result<(u64, Value)> {
         let _busy = Busy::new(&self.shared);
-        let result = self.open_inner(id, plugin, action, opts);
-        if result.is_err() {
-            // The caller gets no id for a failed open, so it could not close the
-            // window (which may keep a stream or session busy); close it here.
-            if self.player(id).is_ok() {
-                let _ = self.close(id);
-            }
-            self.players.remove(id);
+        let _open = self.open_lock.lock().unwrap();
+        if expect.is_some() {
+            self.player(expect)?;
         }
-        result
+        let generation = self.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let result = self.open_inner(generation, plugin, action, opts);
+        if result.is_err() {
+            // A failed open leaves no player: close the window (which may keep a
+            // stream or session busy).
+            let _ = self.close_unlocked(Some(generation));
+        }
+        result.map(|v| (generation, v))
     }
 
     fn open_inner(
         &self,
-        id: &str,
+        generation: u64,
         plugin: &Plugin,
         action: Value,
         opts: &WindowOpts,
     ) -> Result<Value> {
         let inst = self.instance()?;
         let url = action["url"].as_str().unwrap_or_default().to_string();
-        let target_id = self.new_window(&inst, &url, true)?;
+        let plugin = Arc::new(plugin.clone());
+        let player = match inst.player() {
+            Some(player) => {
+                // Same window: swap the adapter and load the URL in place.
+                let old = player.content.lock().unwrap().adapter_script.clone();
+                let _ = inst.cdp.call(
+                    "Page.removeScriptToEvaluateOnNewDocument",
+                    json!({ "identifier": old }),
+                    Some(&player.session_id),
+                    Duration::from_secs(5),
+                );
+                let adapter_script = add_adapter(&inst, &player.session_id, &plugin)?;
+                *player.content.lock().unwrap() = Content {
+                    plugin,
+                    adapter_script,
+                    generation,
+                    last_status: Value::Null,
+                };
+                navigate(&inst, &player, &url)?;
+                apply_window_opts(&inst, &player, opts)?;
+                player
+            }
+            None => {
+                let player = self.create_window(&inst, generation, plugin, &url)?;
+                let mut initial = opts.clone();
+                let last = *self.last_frame.lock().unwrap();
+                if !initial.changes_geometry()
+                    && let Some((size, position)) = last
+                {
+                    // Where the last player window was.
+                    initial.size = Some(size);
+                    initial.position = Some(position);
+                }
+                // A layout without size fills its region; otherwise the window
+                // gets the default size (centered unless placed).
+                if initial.size.is_none() && initial.layout.is_none() {
+                    initial.size = Some(DEFAULT_SIZE);
+                }
+                if initial.position.is_none() && initial.layout.is_none() {
+                    initial.layout = Some(layout::Layout::Center);
+                }
+                apply_window_opts(&inst, &player, &initial)?;
+                player
+            }
+        };
+        // What was opened comes to the front.
+        let _ = inst.cdp.call(
+            "Page.bringToFront",
+            json!({}),
+            Some(&player.session_id),
+            Duration::from_secs(5),
+        );
+
+        // Plugins may ask to be navigated elsewhere first (e.g. to a canonical URL).
+        let mut result = Value::Null;
+        for _ in 0..3 {
+            wait_loaded(&inst, &player)?;
+            result = run_adapter(&inst, &player, &action, Duration::from_secs(40))?;
+            match result.get("navigate").and_then(Value::as_str) {
+                Some(next) => navigate(&inst, &player, next)?,
+                None => break,
+            }
+        }
+        self.respond(&inst, &player, result)
+    }
+
+    /// Opens the player window at `url` and makes it the player.
+    fn create_window(
+        &self,
+        inst: &Instance,
+        generation: u64,
+        plugin: Arc<Plugin>,
+        url: &str,
+    ) -> Result<Arc<ChromePlayer>> {
+        let target_id = self.new_window(inst, url, true)?;
         let attached = inst.cdp.call(
             "Target.attachToTarget",
             json!({ "targetId": target_id, "flatten": true }),
@@ -399,16 +537,7 @@ impl Backend {
             Some(&session_id),
             Duration::from_secs(5),
         )?;
-        // Load the adapter into every document of this window, so it survives
-        // reloads and navigations (plugins can restore their page state on load).
-        if let Some(adapter) = plugin.file("chrome.js") {
-            inst.cdp.call(
-                "Page.addScriptToEvaluateOnNewDocument",
-                json!({ "source": format!("if (!window.__tvctl) {{\n{adapter}\n}}") }),
-                Some(&session_id),
-                Duration::from_secs(5),
-            )?;
-        }
+        let adapter_script = add_adapter(inst, &session_id, &plugin)?;
         // The ducking hook, in every frame (`tvctl duck`).
         inst.cdp.call(
             "Page.addScriptToEvaluateOnNewDocument",
@@ -424,63 +553,35 @@ impl Backend {
             Duration::from_secs(5),
         )?;
         let player = Arc::new(ChromePlayer {
-            plugin: plugin.clone(),
             target_id,
             session_id,
-            last_status: Mutex::new(Value::Null),
+            content: Mutex::new(Content {
+                plugin,
+                adapter_script,
+                generation,
+                last_status: Value::Null,
+            }),
         });
-        inst.players
-            .lock()
-            .unwrap()
-            .insert(id.to_string(), player.clone());
-
-        let mut initial = opts.clone();
-        // Same defaults as the WebView backend: a layout without size fills its
-        // region; otherwise the window gets the default size (centered unless placed).
-        if initial.size.is_none() && initial.layout.is_none() {
-            initial.size = Some(DEFAULT_SIZE);
-        }
-        if initial.position.is_none() && initial.layout.is_none() {
-            initial.layout = Some(layout::Layout::Center);
-        }
-        apply_window_opts(&inst, &player, &initial)?;
-        // Like the WebView backend, a new player comes to the front.
-        let _ = inst.cdp.call(
-            "Page.bringToFront",
-            json!({}),
-            Some(&player.session_id),
-            Duration::from_secs(5),
-        );
-
-        // Plugins may ask to be navigated elsewhere first (e.g. to a canonical URL).
-        let mut result = Value::Null;
-        for _ in 0..3 {
-            wait_loaded(&inst, &player)?;
-            result = run_adapter(&inst, &player, &action, Duration::from_secs(40))?;
-            match result.get("navigate").and_then(Value::as_str) {
-                Some(next) => {
-                    inst.cdp.call(
-                        "Page.navigate",
-                        json!({ "url": next }),
-                        Some(&player.session_id),
-                        Duration::from_secs(10),
-                    )?;
-                    std::thread::sleep(Duration::from_millis(500));
-                }
-                None => break,
-            }
-        }
-        self.respond(id, &inst, &player, result)
+        *inst.player.lock().unwrap() = Some(player.clone());
+        Ok(player)
     }
 
-    pub fn action(&self, id: &str, action: Value) -> Result<Value> {
-        let (inst, player) = self.player(id)?;
+    /// Holds the open lock for operations on content `expect`, so the check and
+    /// the operation cannot interleave with an `open` that replaces it.
+    fn guard_for(&self, expect: Option<u64>) -> Option<std::sync::MutexGuard<'_, ()>> {
+        expect.map(|_| self.open_lock.lock().unwrap())
+    }
+
+    /// Runs a player action on content `expect` (any content when None).
+    pub fn action(&self, expect: Option<u64>, action: Value) -> Result<Value> {
+        let _guard = self.guard_for(expect);
+        let (inst, player) = self.player(expect)?;
         let result = run_adapter(&inst, &player, &action, Duration::from_secs(20))?;
-        self.respond(id, &inst, &player, result)
+        self.respond(&inst, &player, result)
     }
 
-    pub fn window(&self, id: &str, opts: &WindowOpts) -> Result<Value> {
-        let (inst, player) = self.player(id)?;
+    pub fn window(&self, opts: &WindowOpts) -> Result<Value> {
+        let (inst, player) = self.player(None)?;
         apply_window_opts(&inst, &player, opts)?;
         let status = run_adapter(
             &inst,
@@ -488,48 +589,54 @@ impl Backend {
             &json!({ "action": "status" }),
             Duration::from_secs(10),
         )?;
-        self.respond(id, &inst, &player, status)
+        self.respond(&inst, &player, status)
     }
 
-    pub fn close(&self, id: &str) -> Result<Value> {
-        let (inst, player) = self.player(id)?;
+    /// Closes the player window if it shows content `expect` (any when None).
+    pub fn close(&self, expect: Option<u64>) -> Result<Value> {
+        let _guard = self.guard_for(expect);
+        self.close_unlocked(expect)
+    }
+
+    /// `close` for callers that hold the open lock already.
+    fn close_unlocked(&self, expect: Option<u64>) -> Result<Value> {
+        let (inst, player) = self.player(expect)?;
         inst.cdp.call(
             "Target.closeTarget",
             json!({ "targetId": player.target_id }),
             None,
             Duration::from_secs(5),
         )?;
-        inst.players.lock().unwrap().remove(id);
-        self.players.remove(id);
+        let mut slot = inst.player.lock().unwrap();
+        if slot.as_ref().is_some_and(|p| Arc::ptr_eq(p, &player)) {
+            *slot = None;
+        }
+        drop(slot);
         self.shared.schedule_quit_if_unused();
-        Ok(json!({ "id": id, "closed": true }))
+        Ok(json!({ "closed": true }))
     }
 
-    /// Runs a script in every player page, ignoring failures (e.g. a page that is
+    /// Runs a script in the player page, ignoring failures (e.g. a page that is
     /// navigating).
-    pub fn run_in_all(&self, script: &str) {
-        let Some(inst) = self.shared.instance.lock().unwrap().clone() else {
+    pub fn run_in_player(&self, script: &str) {
+        let Ok((inst, player)) = self.player(None) else {
             return;
         };
-        let players: Vec<Arc<ChromePlayer>> =
-            inst.players.lock().unwrap().values().cloned().collect();
-        for player in players {
-            if let Err(e) = evaluate(&inst, &player, script, Duration::from_secs(2)) {
-                eprintln!("chrome player script failed: {e:#}");
-            }
+        if let Err(e) = evaluate(&inst, &player, script, Duration::from_secs(2)) {
+            eprintln!("chrome player script failed: {e:#}");
         }
     }
 
     /// Evaluates a script in the player page and returns its (awaited) value.
-    pub fn eval(&self, id: &str, script: &str) -> Result<Value> {
-        let (inst, player) = self.player(id)?;
+    pub fn eval(&self, script: &str) -> Result<Value> {
+        let (inst, player) = self.player(None)?;
         evaluate(&inst, &player, script, Duration::from_secs(30))
     }
 
     /// Captures the page (works even when the window is covered).
-    pub fn screenshot(&self, id: &str, path: &str) -> Result<Value> {
+    pub fn screenshot(&self, path: &str) -> Result<Value> {
         use base64::Engine;
-        let (inst, player) = self.player(id)?;
+        let (inst, player) = self.player(None)?;
         let shot = inst.cdp.call(
             "Page.captureScreenshot",
             json!({ "format": "png" }),
@@ -540,32 +647,16 @@ impl Backend {
             .decode(shot["data"].as_str().unwrap_or_default())
             .context("decoding screenshot")?;
         std::fs::write(path, &png).with_context(|| format!("writing {path}"))?;
-        Ok(json!({ "id": id, "path": path, "bytes": png.len() }))
+        Ok(json!({ "path": path, "bytes": png.len() }))
     }
 
-    pub fn list(&self) -> Vec<Value> {
-        let Some(inst) = self.shared.instance.lock().unwrap().clone() else {
-            return Vec::new();
+    /// Service and title of the player (from its last response), if any.
+    pub fn summary(&self) -> Value {
+        let Ok((_, p)) = self.player(None) else {
+            return Value::Null;
         };
-        let players: Vec<(String, Arc<ChromePlayer>)> = inst
-            .players
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        players
-            .into_iter()
-            .map(|(id, p)| {
-                json!({
-                    "id": id,
-                    "service": p.plugin.name(),
-                    "backend": "chrome",
-                    "title": p.last_status.lock().unwrap().get("title"),
-                    "window": window_info(&inst, &p).unwrap_or(Value::Null),
-                })
-            })
-            .collect()
+        let c = p.content.lock().unwrap();
+        json!({ "service": c.plugin.name(), "title": c.last_status.get("title") })
     }
 
     /// Closes Chrome if this server started or attached to it.
@@ -578,7 +669,7 @@ impl Backend {
     }
 
     /// Opens the plugin's login page in a normal Chrome window and blocks until the
-    /// user closes that window; then checks and records the login state.
+    /// user closes that window; then checks the login state.
     pub fn login(&self, plugin: &Plugin, site: Option<&str>) -> Result<Value> {
         let _busy = Busy::new(&self.shared);
         let auth_cfg = plugin
@@ -596,7 +687,10 @@ impl Backend {
         }
         let inst = self.instance()?;
         let events = inst.cdp.subscribe();
-        let target = self.new_window(&inst, &login_url, false)?;
+        let target = {
+            let _open = self.open_lock.lock().unwrap();
+            self.new_window(&inst, &login_url, false)?
+        };
         let _ = wait_event(&events, Duration::from_secs(30 * 60), |ev| {
             let closed = ev["method"] == CLOSED_EVENT
                 || (ev["method"] == "Target.targetDestroyed"
@@ -612,8 +706,8 @@ impl Backend {
         {
             let mut guard = self.shared.instance.lock().unwrap();
             if let Some(inst) = guard.as_ref() {
-                if !inst.players.lock().unwrap().is_empty() {
-                    bail!("close the Chrome players first (login needs to restart Chrome)");
+                if inst.player().is_some() {
+                    bail!("close the player first (`tvctl close`; login needs to restart Chrome)");
                 }
                 let _ = inst
                     .cdp
@@ -641,7 +735,7 @@ impl Backend {
         wait_profile_unlocked(&profile)
     }
 
-    /// Checks the login cookies of a plugin in the Chrome profile and records them.
+    /// Checks the login cookies of a plugin in the Chrome profile.
     pub fn login_status(&self, plugin: &Plugin) -> Result<Value> {
         let _busy = Busy::new(&self.shared);
         let auth_cfg = plugin
@@ -663,7 +757,6 @@ impl Backend {
         }
         // A service with several sites counts as logged in when any site is.
         let logged_in = sites.values().any(|v| v == &Value::Bool(true));
-        auth::record(plugin.name(), logged_in);
         let mut out = json!({ "service": plugin.name(), "logged_in": logged_in });
         if sites.len() > 1 {
             out["sites"] = Value::Object(sites);
@@ -671,24 +764,75 @@ impl Backend {
         Ok(out)
     }
 
-    fn respond(
-        &self,
-        id: &str,
-        inst: &Instance,
-        player: &ChromePlayer,
-        result: Value,
-    ) -> Result<Value> {
-        if result.is_object() {
-            *player.last_status.lock().unwrap() = result.clone();
+    fn respond(&self, inst: &Instance, player: &ChromePlayer, result: Value) -> Result<Value> {
+        let service = {
+            let mut c = player.content.lock().unwrap();
+            if result.is_object() {
+                c.last_status = result.clone();
+            }
+            c.plugin.name().to_string()
+        };
+        let window = window_info(inst, player)?;
+        if window["fullscreen"] == false
+            && let (Some(w), Some(h), Some(x), Some(y)) = (
+                window["size"]["width"].as_f64(),
+                window["size"]["height"].as_f64(),
+                window["position"]["x"].as_f64(),
+                window["position"]["y"].as_f64(),
+            )
+        {
+            *self.last_frame.lock().unwrap() = Some(((w, h), (x, y)));
         }
         Ok(json!({
-            "id": id,
-            "service": player.plugin.name(),
-            "backend": "chrome",
+            "service": service,
             "player": result,
-            "window": window_info(inst, player)?,
+            "window": window,
         }))
     }
+}
+
+/// Loads the plugin's adapter into every new document of the window, so it
+/// survives reloads and navigations (plugins can restore their page state on
+/// load). Returns the script's identifier.
+fn add_adapter(inst: &Instance, session_id: &str, plugin: &Plugin) -> Result<String> {
+    let adapter = plugin
+        .file("chrome.js")
+        .context("plugin has no chrome.js")?;
+    let r = inst.cdp.call(
+        "Page.addScriptToEvaluateOnNewDocument",
+        json!({ "source": format!("if (!window.__tvctl) {{\n{adapter}\n}}") }),
+        Some(session_id),
+        Duration::from_secs(5),
+    )?;
+    Ok(r["identifier"].as_str().unwrap_or_default().to_string())
+}
+
+/// Marks a document as replaced; `wait_loaded` waits for one without the mark.
+const STALE_MARK: &str = "window.__tvctl_stale = true";
+
+/// Loads `url` in the player window as a new document.
+fn navigate(inst: &Instance, player: &ChromePlayer, url: &str) -> Result<()> {
+    let _ = evaluate(inst, player, STALE_MARK, Duration::from_secs(5));
+    let r = inst.cdp.call(
+        "Page.navigate",
+        json!({ "url": url }),
+        Some(&player.session_id),
+        Duration::from_secs(10),
+    )?;
+    if let Some(e) = r["errorText"].as_str().filter(|e| !e.is_empty()) {
+        bail!("loading {url}: {e}");
+    }
+    // Only a cross-document navigation has a loader; reload a same-document one
+    // (e.g. the same URL with another #fragment) so the page starts fresh.
+    if r["loaderId"].as_str().is_none_or(str::is_empty) {
+        inst.cdp.call(
+            "Page.reload",
+            json!({}),
+            Some(&player.session_id),
+            Duration::from_secs(10),
+        )?;
+    }
+    Ok(())
 }
 
 /// Whether `cookies` (from `Storage.getCookies`) hold a login cookie of `site`.
@@ -785,14 +929,15 @@ fn evaluate(
     Ok(r["result"]["value"].clone())
 }
 
-/// Waits until the page has navigated away from about:blank and parsed its DOM.
+/// Waits until the page has navigated away from about:blank (or a document
+/// replaced by `navigate`) and parsed its DOM.
 fn wait_loaded(inst: &Instance, player: &ChromePlayer) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let state = evaluate(
             inst,
             player,
-            "location.protocol.startsWith('http') && document.readyState !== 'loading'",
+            "!window.__tvctl_stale && location.protocol.startsWith('http') && document.readyState !== 'loading'",
             Duration::from_secs(5),
         );
         if matches!(state, Ok(Value::Bool(true))) {
@@ -811,8 +956,8 @@ fn run_adapter(
     action: &Value,
     timeout: Duration,
 ) -> Result<Value> {
-    let adapter = player
-        .plugin
+    let plugin = player.plugin();
+    let adapter = plugin
         .file("chrome.js")
         .context("plugin has no chrome.js")?;
     // The blackout script is installed here too: `Page.addScriptToEvaluateOnNewDocument`
@@ -883,9 +1028,6 @@ fn set_bounds(inst: &Instance, window_id: i64, bounds: Value) -> Result<()> {
 }
 
 fn apply_window_opts(inst: &Instance, player: &ChromePlayer, opts: &WindowOpts) -> Result<()> {
-    if matches!(opts.on_top, Some(Switch::On | Switch::Toggle)) {
-        bail!("always-on-top is not supported by the chrome backend");
-    }
     let mut g = geometry(inst, player)?;
     let state = g.bounds["windowState"]
         .as_str()
@@ -940,7 +1082,6 @@ fn window_info(inst: &Instance, player: &ChromePlayer) -> Result<Value> {
         "size": { "width": g.inner.0, "height": g.inner.1 },
         "outer_size": { "width": b["width"], "height": b["height"] },
         "fullscreen": b["windowState"] == "fullscreen",
-        "on_top": false,
         "blackout": g.blackout,
         "work_area": g.work_area,
     }))

@@ -1,6 +1,6 @@
-//! End-to-end tests with the fake plugin: real server, real windows (native
-//! WebView and Google Chrome), no network. They open windows on the desktop, so
-//! they are ignored by default:
+//! End-to-end tests with the fake plugin: real server, real player window
+//! (Google Chrome), no network. They open windows on the desktop, so they are
+//! ignored by default:
 //!
 //!     cargo test --test e2e_fake -- --ignored --test-threads=1
 
@@ -11,9 +11,9 @@ use std::time::Duration;
 use common::{Env, eventually, f, is_png};
 use serde_json::{Value, json};
 
-fn open(env: &Env, backend: &str, extra: &[&str]) -> Value {
-    let url = env.url("/video/1");
-    let mut args = vec!["open", url.as_str(), "--backend", backend];
+fn open(env: &Env, path: &str, extra: &[&str]) -> Value {
+    let url = env.url(path);
+    let mut args = vec!["open", url.as_str()];
     args.extend_from_slice(extra);
     env.ok(&args)
 }
@@ -22,15 +22,20 @@ fn player(v: &Value, key: &str) -> Value {
     v["player"][key].clone()
 }
 
-/// Asserts the window's outer frame equals `expected` (x, y, w, h) within 2 px.
-fn assert_frame(v: &Value, expected: (f64, f64, f64, f64), what: &str) {
+/// The (x, y, w, h) outer frame of the window.
+fn frame(v: &Value) -> (f64, f64, f64, f64) {
     let w = &v["window"];
-    let got = (
+    (
         f(&w["position"]["x"]),
         f(&w["position"]["y"]),
         f(&w["outer_size"]["width"]),
         f(&w["outer_size"]["height"]),
-    );
+    )
+}
+
+/// Asserts the window's outer frame equals `expected` (x, y, w, h) within 2 px.
+fn assert_frame(v: &Value, expected: (f64, f64, f64, f64), what: &str) {
+    let got = frame(v);
     let close = |a: f64, b: f64| (a - b).abs() <= 2.0;
     assert!(
         close(got.0, expected.0)
@@ -46,30 +51,44 @@ fn work_area(v: &Value) -> (f64, f64, f64, f64) {
     (f(&wa["x"]), f(&wa["y"]), f(&wa["width"]), f(&wa["height"]))
 }
 
+/// Entries in the player window's history (1 in a new window).
+fn history_length(env: &Env) -> u64 {
+    env.ok(&["__eval", "history.length"]).as_u64().unwrap()
+}
+
+fn no_player(env: &Env) -> bool {
+    env.ok(&["server", "status"])["player"].is_null()
+}
+
 #[test]
 #[ignore = "opens windows; run with --ignored"]
 fn server_lifecycle() {
     let env = Env::new();
     assert_eq!(env.ok(&["server", "status"])["running"], false);
-    // Without a server there are no players; listing does not start one.
-    assert_eq!(env.ok(&["list"]), json!({ "players": [] }));
-    assert_eq!(env.ok(&["server", "status"])["running"], false);
     let up = env.ok(&["server", "up"]);
     assert_eq!(up["already_running"], false);
     assert!(up["pid"].as_u64().unwrap() > 0);
+    assert!(up["player"].is_null(), "{up}");
     assert_eq!(env.ok(&["server", "up"])["already_running"], true);
     let st = env.ok(&["server", "status"]);
     assert_eq!(st["running"], true);
-    assert_eq!(st["players"], 0);
-    assert_eq!(env.ok(&["list"]), json!({ "players": [] }));
+    assert!(st["player"].is_null());
+    open(&env, "/video/1", &[]);
+    assert_eq!(
+        env.ok(&["server", "status"])["player"],
+        json!({ "service": "fake", "title": "Fake video" })
+    );
     let down = env.ok(&["server", "down"]);
     assert_eq!(down, json!({ "running": false, "was_running": true }));
     assert_eq!(env.ok(&["server", "down"])["was_running"], false);
-    assert!(env.err(&["status", "1"]).contains("not running"));
+    assert!(env.err(&["status"]).contains("not running"));
+    // Shutting down closed the player.
+    env.up();
+    assert!(no_player(&env));
 }
 
 /// A server started from an SSH session cannot keep Chrome logins (no keychain):
-/// `auth login` is refused, and login state and Chrome players carry a warning.
+/// `auth login` is refused, and login state and player responses carry a warning.
 #[test]
 #[ignore = "opens windows; run with --ignored"]
 fn ssh_session_warnings() {
@@ -87,20 +106,15 @@ fn ssh_session_warnings() {
         "{e}"
     );
     assert!(env.ok(&["auth", "status"])["warning"].is_string());
-    let chrome = open(&env, "chrome", &[]);
-    assert!(
-        chrome["warning"].as_str().unwrap().contains("keychain"),
-        "{chrome}"
-    );
-    let webview = open(&env, "webview", &[]);
-    assert!(webview["warning"].is_null(), "{webview}");
+    let v = open(&env, "/video/1", &[]);
+    assert!(v["warning"].as_str().unwrap().contains("keychain"), "{v}");
     env.ok(&["server", "down"]);
     // Started without SSH, there is no warning.
     let up = env.ok(&["server", "up"]);
     if std::env::var_os("SSH_CONNECTION").is_none() {
         assert_eq!(up["ssh_session"], false);
         assert!(up["warning"].is_null());
-        assert!(open(&env, "chrome", &[])["warning"].is_null());
+        assert!(open(&env, "/video/1", &[])["warning"].is_null());
     }
 }
 
@@ -115,8 +129,8 @@ fn commands_do_not_start_the_server() {
     let env = Env::new();
     for args in [
         vec!["open", "https://www.youtube.com/watch?v=x"],
-        vec!["status", "1"],
-        vec!["close", "1"],
+        vec!["status"],
+        vec!["close"],
         vec!["auth", "status"],
         vec!["auth", "login", "fake"],
     ] {
@@ -133,34 +147,30 @@ fn commands_do_not_start_the_server() {
         (s["enabled"].clone(), s["server_running"].clone()),
         (json!(true), json!(false))
     );
+    assert_eq!(s["in_player"], false);
     assert!(env.err(&["cast", "code"]).contains("not running"));
     assert!(!running(&env), "cast started the server");
     env.ok(&["cast", "off"]);
 }
 
-/// Opening and closing players never stops the server, even when the user
-/// closes the last window.
+/// Opening and closing the player never stops the server, even when the user
+/// closes the window.
 #[test]
 #[ignore = "opens windows; run with --ignored"]
-fn server_stays_up_without_players() {
+fn server_stays_up_without_a_player() {
     let env = Env::new();
     env.up();
-    for backend in ["webview", "chrome"] {
-        let v = open(&env, backend, &[]);
-        env.ok(&["close", v["id"].as_str().unwrap()]);
-        std::thread::sleep(Duration::from_millis(1500));
-        assert!(running(&env), "{backend}: stopped after close");
-    }
+    open(&env, "/video/1", &[]);
+    assert_eq!(env.ok(&["close"]), json!({ "closed": true }));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(running(&env), "stopped after close");
     // The fake login page closes its own window, as a user closing it would.
-    let _ = env.run(&["open", &env.url("/login"), "--backend", "chrome"]);
+    let _ = env.run(&["open", &env.url("/login")]);
     eventually("the window closed", Duration::from_secs(15), || {
-        env.ok(&["list"]) == json!({ "players": [] })
+        no_player(&env)
     });
     std::thread::sleep(Duration::from_millis(1500));
-    assert!(
-        running(&env),
-        "stopped after the user closed the last window"
-    );
+    assert!(running(&env), "stopped after the user closed the window");
     assert_eq!(env.ok(&["server", "up"])["already_running"], true);
 }
 
@@ -185,7 +195,7 @@ fn plugins_listing() {
         .iter()
         .find(|p| p["name"] == "fake")
         .unwrap();
-    assert_eq!(fake["backends"], json!(["webview", "chrome"]));
+    assert!(fake.get("backends").is_none(), "{fake}");
     assert!(fake["source"].as_str().unwrap().ends_with("plugins/fake"));
 }
 
@@ -207,33 +217,40 @@ fn open_errors() {
         env.err(&["open", &url, "--start", "later"])
             .contains("invalid time")
     );
-    // A Chrome player whose adapter fails to open closes its window (the caller
-    // gets no id to close it with).
-    let failing = env.url("/v?fail=1");
-    let e = env.err(&["open", &failing, "--backend", "chrome"]);
-    assert!(e.contains("fake open failure"), "{e}");
-    assert_eq!(env.ok(&["list"]), serde_json::json!({ "players": [] }));
+    // An open whose adapter fails leaves no player (its window is closed),
+    // also when it replaced what the window showed.
+    for _ in 0..2 {
+        let e = env.err(&["open", &env.url("/v?fail=1")]);
+        assert!(e.contains("fake open failure"), "{e}");
+        assert!(no_player(&env));
+        open(&env, "/video/1", &[]);
+    }
+    env.ok(&["close"]);
     for cmd in [
-        vec!["status", "9"],
-        vec!["play", "9"],
-        vec!["seek", "9", "10"],
-        vec!["window", "9", "--layout", "left"],
-        vec!["screenshot", "9", "/tmp/x.png"],
-        vec!["close", "9"],
+        vec!["status"],
+        vec!["play"],
+        vec!["seek", "10"],
+        vec!["window", "--layout", "left"],
+        vec!["screenshot", "/tmp/x.png"],
+        vec!["close"],
+        vec!["__eval", "1"],
     ] {
-        assert!(env.err(&cmd).contains("no player with id \"9\""), "{cmd:?}");
+        let e = env.err(&cmd);
+        assert!(e.contains("no player is open"), "{cmd:?}: {e}");
     }
 }
 
-/// Every player command on one backend.
-fn playback_suite(backend: &str) {
+/// Every player command.
+#[test]
+#[ignore = "opens windows; run with --ignored"]
+fn playback() {
     let env = Env::new();
     env.up();
 
     // open with every option
     let v = open(
         &env,
-        backend,
+        "/video/1",
         &[
             "--start",
             "1:30",
@@ -246,10 +263,8 @@ fn playback_suite(backend: &str) {
             "100,120",
         ],
     );
-    let id = v["id"].as_str().unwrap().to_string();
-    let id = id.as_str();
+    assert!(v.get("id").is_none() && v.get("backend").is_none(), "{v}");
     assert_eq!(v["service"], "fake");
-    assert_eq!(v["backend"], backend);
     assert_eq!(player(&v, "opened")["url"], env.url("/video/1"));
     assert_eq!(player(&v, "opened")["start"], 90.0);
     assert_eq!(player(&v, "opened")["paused"], true);
@@ -260,97 +275,84 @@ fn playback_suite(backend: &str) {
     assert_eq!(f(&v["window"]["size"]["height"]), 360.0);
     assert_eq!(f(&v["window"]["position"]["x"]), 100.0);
     assert_eq!(f(&v["window"]["position"]["y"]), 120.0);
+    assert!(v["window"].get("on_top").is_none(), "{v}");
 
     // status / play / pause / toggle
-    let st = env.ok(&["status", id]);
-    assert_eq!(st["id"], id);
+    let st = env.ok(&["status"]);
     assert_eq!(player(&st, "title"), "Fake video");
-    assert_eq!(player(&env.ok(&["play", id]), "state"), "playing");
-    assert_eq!(player(&env.ok(&["pause", id]), "state"), "paused");
-    assert_eq!(player(&env.ok(&["toggle", id]), "state"), "playing");
-    assert_eq!(player(&env.ok(&["toggle", id]), "state"), "paused");
+    assert_eq!(player(&env.ok(&["play"]), "state"), "playing");
+    assert_eq!(player(&env.ok(&["pause"]), "state"), "paused");
+    assert_eq!(player(&env.ok(&["toggle"]), "state"), "playing");
+    assert_eq!(player(&env.ok(&["toggle"]), "state"), "paused");
 
     // next / previous
-    assert_eq!(player(&env.ok(&["next", id]), "item"), 1);
-    assert_eq!(player(&env.ok(&["next", id]), "item"), 2);
-    assert_eq!(player(&env.ok(&["prev", id]), "item"), 1);
-    env.ok(&["seek", id, "90"]);
+    assert_eq!(player(&env.ok(&["next"]), "item"), 1);
+    assert_eq!(player(&env.ok(&["next"]), "item"), 2);
+    assert_eq!(player(&env.ok(&["prev"]), "item"), 1);
+    env.ok(&["seek", "90"]);
 
     // seeking: absolute, relative, clamped, forward/back defaults
     let t = |args: &[&str]| f(&player(&env.ok(args), "current_time"));
-    assert_eq!(t(&["seek", id, "1:00"]), 60.0);
-    assert_eq!(t(&["seek", id, "+10"]), 70.0);
-    assert_eq!(t(&["seek", id, "-1m"]), 10.0);
-    assert_eq!(t(&["seek", id, "-100"]), 0.0);
-    assert_eq!(t(&["seek", id, "9999"]), 600.0);
-    assert_eq!(t(&["seek", id, "1m30s"]), 90.0);
-    assert_eq!(t(&["forward", id]), 100.0);
-    assert_eq!(t(&["forward", id, "30"]), 130.0);
-    assert_eq!(t(&["back", id]), 120.0);
-    assert_eq!(t(&["back", id, "1:00"]), 60.0);
+    assert_eq!(t(&["seek", "1:00"]), 60.0);
+    assert_eq!(t(&["seek", "+10"]), 70.0);
+    assert_eq!(t(&["seek", "-1m"]), 10.0);
+    assert_eq!(t(&["seek", "-100"]), 0.0);
+    assert_eq!(t(&["seek", "9999"]), 600.0);
+    assert_eq!(t(&["seek", "1m30s"]), 90.0);
+    assert_eq!(t(&["forward"]), 100.0);
+    assert_eq!(t(&["forward", "30"]), 130.0);
+    assert_eq!(t(&["back"]), 120.0);
+    assert_eq!(t(&["back", "1:00"]), 60.0);
 
     // subtitles
-    let list = env.ok(&["subtitles", id, "list"]);
+    let list = env.ok(&["subtitles", "list"]);
     assert_eq!(player(&list, "tracks").as_array().unwrap().len(), 2);
     assert_eq!(
-        player(&env.ok(&["subtitles", id, "off"]), "subtitles"),
+        player(&env.ok(&["subtitles", "off"]), "subtitles"),
         Value::Null
     );
-    assert_eq!(player(&env.ok(&["subtitles", id, "on"]), "subtitles"), "en");
-    assert_eq!(player(&env.ok(&["subtitles", id, "ja"]), "subtitles"), "ja");
+    assert_eq!(player(&env.ok(&["subtitles", "on"]), "subtitles"), "en");
+    assert_eq!(player(&env.ok(&["subtitles", "ja"]), "subtitles"), "ja");
     assert!(
-        env.err(&["subtitles", id, "xx"])
+        env.err(&["subtitles", "xx"])
             .contains("no subtitles for \"xx\"")
     );
 
     // audio tracks
     assert_eq!(
-        player(&env.ok(&["audio", id, "list"]), "audio_tracks"),
+        player(&env.ok(&["audio", "list"]), "audio_tracks"),
         json!(["en", "ja"])
     );
-    assert_eq!(player(&env.ok(&["audio", id, "ja"]), "audio"), "ja");
-    assert!(env.err(&["audio", id, "fr"]).contains("no audio track"));
+    assert_eq!(player(&env.ok(&["audio", "ja"]), "audio"), "ja");
+    assert!(env.err(&["audio", "fr"]).contains("no audio track"));
 
     // volume / mute / speed / quality
-    assert_eq!(player(&env.ok(&["volume", id, "30"]), "volume"), 30);
-    assert_eq!(player(&env.ok(&["mute", id]), "muted"), true);
-    assert_eq!(player(&env.ok(&["unmute", id]), "muted"), false);
-    assert_eq!(player(&env.ok(&["speed", id, "1.5"]), "playback_rate"), 1.5);
-    assert_eq!(
-        player(&env.ok(&["quality", id, "hd1080"]), "quality"),
-        "hd1080"
-    );
-    assert!(
-        env.err(&["quality", id, "hd2160"])
-            .contains("not available")
-    );
+    assert_eq!(player(&env.ok(&["volume", "30"]), "volume"), 30);
+    assert_eq!(player(&env.ok(&["mute"]), "muted"), true);
+    assert_eq!(player(&env.ok(&["unmute"]), "muted"), false);
+    assert_eq!(player(&env.ok(&["speed", "1.5"]), "playback_rate"), 1.5);
+    assert_eq!(player(&env.ok(&["quality", "hd1080"]), "quality"), "hd1080");
+    assert!(env.err(&["quality", "hd2160"]).contains("not available"));
 
     // screenshot
     let shot = env.path("shot.png");
-    let s = env.ok(&["screenshot", id, shot.to_str().unwrap()]);
+    let s = env.ok(&["screenshot", shot.to_str().unwrap()]);
     assert_eq!(s["path"], shot.to_str().unwrap());
     assert!(is_png(&shot), "screenshot is not a PNG");
 
-    // list and close
-    let list = env.ok(&["list"]);
-    let players = list["players"].as_array().unwrap();
-    assert_eq!(players.len(), 1);
-    assert_eq!(players[0]["id"], id);
-    assert_eq!(players[0]["backend"], backend);
-    assert_eq!(players[0]["service"], "fake");
-    assert_eq!(players[0]["title"], "Fake video");
-    assert_eq!(env.ok(&["close", id]), json!({ "id": id, "closed": true }));
-    assert!(env.err(&["status", id]).contains("no player"));
-    assert_eq!(env.ok(&["list"]), json!({ "players": [] }));
+    // close
+    assert_eq!(env.ok(&["close"]), json!({ "closed": true }));
+    assert!(env.err(&["status"]).contains("no player is open"));
+    assert!(no_player(&env));
 }
 
-/// Window size, position, every layout preset, fullscreen and always-on-top.
-fn window_suite(backend: &str) {
+/// Window size, position, every layout preset and fullscreen.
+#[test]
+#[ignore = "opens windows; run with --ignored"]
+fn window() {
     let env = Env::new();
     env.up();
-    let v = open(&env, backend, &[]);
-    let id = v["id"].as_str().unwrap().to_string();
-    let id = id.as_str();
+    let v = open(&env, "/video/1", &[]);
     // Default: 960x540 video area, centered.
     assert_eq!(f(&v["window"]["size"]["width"]), 960.0);
     assert_eq!(f(&v["window"]["size"]["height"]), 540.0);
@@ -364,7 +366,7 @@ fn window_suite(backend: &str) {
     );
 
     // size and position
-    let v = env.ok(&["window", id, "--size", "800x450", "--position", "40,60"]);
+    let v = env.ok(&["window", "--size", "800x450", "--position", "40,60"]);
     assert_eq!(f(&v["window"]["size"]["width"]), 800.0);
     assert_eq!(f(&v["window"]["size"]["height"]), 450.0);
     assert_eq!(f(&v["window"]["position"]["x"]), 40.0);
@@ -372,7 +374,7 @@ fn window_suite(backend: &str) {
 
     // every region preset
     let (hw, hh) = (w / 2.0, h / 2.0);
-    for (layout, frame) in [
+    for (layout, expected) in [
         ("left", (x, y, hw, h)),
         ("right", (x + hw, y, hw, h)),
         ("top", (x, y, w, hh)),
@@ -383,19 +385,12 @@ fn window_suite(backend: &str) {
         ("bottom-right", (x + hw, y + hh, hw, hh)),
         ("maximize", (x, y, w, h)),
     ] {
-        let v = env.ok(&["window", id, "--layout", layout]);
-        assert_frame(&v, frame, layout);
+        let v = env.ok(&["window", "--layout", layout]);
+        assert_frame(&v, expected, layout);
     }
 
     // anchored size (picture-in-picture style) and center
-    let v = env.ok(&[
-        "window",
-        id,
-        "--layout",
-        "bottom-right",
-        "--size",
-        "480x270",
-    ]);
+    let v = env.ok(&["window", "--layout", "bottom-right", "--size", "480x270"]);
     assert_eq!(f(&v["window"]["size"]["width"]), 480.0);
     assert_eq!(f(&v["window"]["size"]["height"]), 270.0);
     let (ow, oh) = (
@@ -403,7 +398,7 @@ fn window_suite(backend: &str) {
         f(&v["window"]["outer_size"]["height"]),
     );
     assert_frame(&v, (x + w - ow, y + h - oh, ow, oh), "bottom-right 480x270");
-    let v = env.ok(&["window", id, "--layout", "center"]);
+    let v = env.ok(&["window", "--layout", "center"]);
     assert_frame(
         &v,
         (x + (w - ow) / 2.0, y + (h - oh) / 2.0, ow, oh),
@@ -411,118 +406,103 @@ fn window_suite(backend: &str) {
     );
 
     // fullscreen on / off / toggle, and a layout leaves fullscreen
-    env.ok(&["fullscreen", id, "on"]);
+    let fullscreen = || env.ok(&["status"])["window"]["fullscreen"].clone();
+    env.ok(&["fullscreen", "on"]);
     eventually("fullscreen on", Duration::from_secs(5), || {
-        env.ok(&["status", id])["window"]["fullscreen"] == true
+        fullscreen() == true
     });
-    env.ok(&["fullscreen", id, "off"]);
+    env.ok(&["fullscreen", "off"]);
     eventually("fullscreen off", Duration::from_secs(5), || {
-        env.ok(&["status", id])["window"]["fullscreen"] == false
+        fullscreen() == false
     });
     std::thread::sleep(Duration::from_secs(1));
-    env.ok(&["fullscreen", id]);
+    env.ok(&["fullscreen"]);
     eventually("fullscreen toggled on", Duration::from_secs(5), || {
-        env.ok(&["status", id])["window"]["fullscreen"] == true
+        fullscreen() == true
     });
     std::thread::sleep(Duration::from_secs(1));
-    let v = env.ok(&["window", id, "--layout", "left"]);
+    let v = env.ok(&["window", "--layout", "left"]);
     assert_eq!(v["window"]["fullscreen"], false);
     assert_frame(&v, (x, y, hw, h), "left after fullscreen");
+    // The WebView backend's always-on-top is gone.
+    assert!(env.err(&["window", "--on-top", "on"]).contains("on-top"));
 
-    // always-on-top: WebView supports it; Chrome reports it as unsupported.
-    if backend == "webview" {
-        assert_eq!(
-            env.ok(&["window", id, "--on-top", "on"])["window"]["on_top"],
-            true
-        );
-        assert_eq!(
-            env.ok(&["window", id, "--on-top", "toggle"])["window"]["on_top"],
-            false
-        );
-    } else {
-        assert!(
-            env.err(&["window", id, "--on-top", "on"])
-                .contains("not supported")
-        );
-        assert_eq!(
-            env.ok(&["window", id, "--on-top", "off"])["window"]["on_top"],
-            false
-        );
-    }
-
-    // open with window options
-    let v = open(&env, backend, &["--layout", "top-right"]);
+    // open with window options moves the existing window
+    let v = open(&env, "/video/2", &["--layout", "top-right"]);
     assert_frame(&v, (x + hw, y, hw, hh), "open --layout top-right");
-    let v = open(&env, backend, &["--fullscreen"]);
-    let id2 = v["id"].as_str().unwrap().to_string();
+    open(&env, "/video/3", &["--fullscreen"]);
     eventually("open --fullscreen", Duration::from_secs(5), || {
-        env.ok(&["status", &id2])["window"]["fullscreen"] == true
+        fullscreen() == true
     });
-    env.ok(&["close", &id2]);
+    env.ok(&["close"]);
 }
 
+/// There is one player window: `open` replaces what it shows in place.
 #[test]
 #[ignore = "opens windows; run with --ignored"]
-fn webview_playback() {
-    playback_suite("webview");
-}
-
-#[test]
-#[ignore = "opens windows; run with --ignored"]
-fn chrome_playback() {
-    playback_suite("chrome");
-}
-
-#[test]
-#[ignore = "opens windows; run with --ignored"]
-fn webview_window() {
-    window_suite("webview");
-}
-
-#[test]
-#[ignore = "opens windows; run with --ignored"]
-fn chrome_window() {
-    window_suite("chrome");
-}
-
-#[test]
-#[ignore = "opens windows; run with --ignored"]
-fn multiple_players_across_backends() {
+fn open_replaces_content_in_the_same_window() {
     let env = Env::new();
     env.up();
-    let a = open(&env, "webview", &[]);
-    let b = open(&env, "chrome", &[]);
-    let c = open(&env, "chrome", &[]);
-    let ids: Vec<&str> = [&a, &b, &c]
-        .iter()
-        .map(|v| v["id"].as_str().unwrap())
-        .collect();
-    assert_eq!(ids, ["1", "2", "3"]);
-    env.ok(&["seek", "1", "10"]);
-    env.ok(&["seek", "2", "20"]);
-    env.ok(&["seek", "3", "30"]);
-    for (id, t) in [("1", 10.0), ("2", 20.0), ("3", 30.0)] {
-        assert_eq!(
-            f(&player(&env.ok(&["status", id]), "current_time")),
-            t,
-            "player {id}"
-        );
-    }
-    let list = env.ok(&["list"]);
-    let backends: Vec<&str> = list["players"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|p| p["backend"].as_str().unwrap())
-        .collect();
-    assert_eq!(backends, ["webview", "chrome", "chrome"]);
-    env.ok(&["close", "2"]);
-    assert_eq!(f(&player(&env.ok(&["status", "3"]), "current_time")), 30.0);
-    assert_eq!(env.ok(&["server", "status"])["players"], 2);
-    // Shutting down closes everything.
-    env.ok(&["server", "down"]);
-    env.up();
-    assert_eq!(env.ok(&["list"]), json!({ "players": [] }));
+    let a = open(
+        &env,
+        "/video/1",
+        &["--size", "640x360", "--position", "100,120"],
+    );
+    assert_eq!(history_length(&env), 1);
+    env.ok(&["seek", "30"]);
+
+    // Same window (one more history entry), same place and size, new content.
+    let b = open(&env, "/video/2", &[]);
+    assert_eq!(history_length(&env), 2);
+    assert_eq!(frame(&b), frame(&a));
+    assert_eq!(player(&b, "opened")["url"], env.url("/video/2"));
+    assert_eq!(player(&b, "current_time"), 0.0);
+    assert_eq!(f(&player(&env.ok(&["status"]), "current_time")), 0.0);
+
+    // The same URL again reloads it (the adapter opens it afresh).
+    env.ok(&["seek", "40"]);
+    let again = open(&env, "/video/2", &[]);
+    assert_eq!(player(&again, "current_time"), 0.0);
+
+    // Another plugin in the same window: its declarations apply.
+    let limited = env.url("/v").replace("127.0.0.1", "localhost");
+    let c = env.ok(&["open", &limited]);
+    assert_eq!(c["service"], "limited");
+    assert_eq!(frame(&c), frame(&a));
+    assert!(
+        env.err(&["pause"])
+            .contains("pause is not supported by limited")
+    );
+    // Its adapter is loaded into new documents of the window (after a reload).
+    env.ok(&["__eval", "setTimeout(() => location.reload(), 0), 1"]);
+    eventually("the adapter after reload", Duration::from_secs(10), || {
+        env.run(&["status"])
+            .is_ok_and(|v| v["player"]["title"] == "Fake video")
+    });
+
+    // Fullscreen is kept across opens.
+    env.ok(&["fullscreen", "on"]);
+    eventually("fullscreen on", Duration::from_secs(5), || {
+        env.ok(&["status"])["window"]["fullscreen"] == true
+    });
+    open(&env, "/video/3", &[]);
+    assert_eq!(env.ok(&["status"])["window"]["fullscreen"], true);
+    env.ok(&["fullscreen", "off"]);
+    eventually("fullscreen off", Duration::from_secs(5), || {
+        env.ok(&["status"])["window"]["fullscreen"] == false
+    });
+    std::thread::sleep(Duration::from_secs(1));
+
+    // After `close`, the next window opens where the last one was.
+    let placed = env.ok(&["window", "--size", "500x300", "--position", "50,70"]);
+    env.ok(&["close"]);
+    let d = open(&env, "/video/4", &[]);
+    assert_eq!(history_length(&env), 1);
+    assert_frame(&d, frame(&placed), "reopened where the last window was");
+    // Window options win over the remembered place.
+    env.ok(&["close"]);
+    let e = open(&env, "/video/5", &["--size", "640x360"]);
+    assert_eq!(f(&e["window"]["size"]["width"]), 640.0);
 }
 
 #[test]
@@ -531,34 +511,18 @@ fn undeclared_actions_are_refused() {
     let env = Env::new();
     env.up();
     let url = env.url("/v").replace("127.0.0.1", "localhost");
-    let w = env.ok(&["open", &url, "--backend", "webview"]);
-    let c = env.ok(&["open", &url, "--backend", "chrome"]);
-    assert_eq!(
-        (w["service"].as_str(), c["service"].as_str()),
-        (Some("limited"), Some("limited"))
-    );
-    let (w, c) = (w["id"].as_str().unwrap(), c["id"].as_str().unwrap());
+    assert_eq!(env.ok(&["open", &url])["service"], "limited");
     // Declared actions work; `status` is always available.
-    env.ok(&["play", w]);
-    env.ok(&["pause", w]);
-    env.ok(&["status", c]);
-    env.ok(&["play", c]);
+    env.ok(&["status"]);
+    env.ok(&["play"]);
     // Undeclared ones are refused by the server with the supported list.
-    let e = env.err(&["seek", w, "10"]);
+    let e = env.err(&["seek", "10"]);
     assert!(
-        e.contains(
-            "seek is not supported by limited (Webview backend); supported: status, play, pause"
-        ),
+        e.contains("seek is not supported by limited; supported: status, play"),
         "{e}"
     );
-    let e = env.err(&["prev", w]);
+    let e = env.err(&["prev"]);
     assert!(e.contains("previous is not supported"), "{e}");
-    // Backend-specific gaps from [unsupported_actions].
-    let e = env.err(&["pause", c]);
-    assert!(
-        e.contains("pause is not supported by limited (Chrome backend); supported: status, play"),
-        "{e}"
-    );
     // `plugins` exposes the declarations.
     let plugins = env.ok(&["plugins"]);
     let limited = plugins["plugins"]
@@ -567,11 +531,8 @@ fn undeclared_actions_are_refused() {
         .iter()
         .find(|p| p["name"] == "limited")
         .unwrap();
-    assert_eq!(limited["actions"], json!(["play", "pause"]));
-    assert_eq!(
-        limited["unsupported_actions"],
-        json!({ "chrome": ["pause"] })
-    );
+    assert_eq!(limited["actions"], json!(["play"]));
+    assert!(limited.get("unsupported_actions").is_none(), "{limited}");
 }
 
 #[test]
@@ -602,12 +563,11 @@ fn duck_hook_scales_media_volume_invisibly() {
     let env = Env::new();
     env.up();
     assert_eq!(env.ok(&["duck", "status"])["server_running"], true);
-    let c = open(&env, "chrome", &[]);
-    let id = c["id"].as_str().unwrap();
+    open(&env, "/video/1", &[]);
     // Reload so the page starts with the hook installed before its own scripts.
-    env.ok(&["__eval", id, "setTimeout(() => location.reload(), 0), 1"]);
+    env.ok(&["__eval", "setTimeout(() => location.reload(), 0), 1"]);
     eventually("the hook after reload", Duration::from_secs(10), || {
-        env.run(&["__eval", id, "typeof window.__tvctlDuck"]) == Ok(json!("object"))
+        env.run(&["__eval", "typeof window.__tvctlDuck"]) == Ok(json!("object"))
     });
     let script = r#"(() => {
       const a = document.createElement("audio");
@@ -630,7 +590,7 @@ fn duck_hook_scales_media_volume_invisibly() {
       return r.map((x) => typeof x === "number" ? Math.round(x * 1000) / 1000 : x);
     })()"#;
     assert_eq!(
-        env.ok(&["__eval", id, script]),
+        env.ok(&["__eval", script]),
         json!([
             0.5,
             0.05,
@@ -651,109 +611,94 @@ fn duck_hook_scales_media_volume_invisibly() {
       await new Promise((r) => setTimeout(r, 500));
       return [a.volume, Math.round(window.__tvctlDuck.actual(a) * 1000) / 1000];
     })()"#;
-    assert_eq!(env.ok(&["__eval", id, faded]), json!([0.8, 0.2]));
+    assert_eq!(env.ok(&["__eval", faded]), json!([0.8, 0.2]));
 }
 
-fn blackout(env: &Env, id: &str) -> bool {
-    env.ok(&["status", id])["window"]["blackout"]
+fn blackout(env: &Env) -> bool {
+    env.ok(&["status"])["window"]["blackout"]
         .as_bool()
         .expect("window.blackout")
 }
 
 /// A paused player turns black after `TVCTL_BLACKOUT_SECS`; playing again or a
 /// player command removes it, and the wait starts again.
-fn blackout_suite(backend: &str) {
+#[test]
+#[ignore = "opens windows; run with --ignored"]
+fn blackout_while_paused() {
     let env = Env::new();
     env.run_with_env(&["server", "up"], &[("TVCTL_BLACKOUT_SECS", "1")])
         .unwrap();
-    let v = open(&env, backend, &["--paused"]);
-    let id = v["id"].as_str().unwrap();
+    let v = open(&env, "/video/1", &["--paused"]);
     assert_eq!(v["window"]["blackout"], false);
     let wait = Duration::from_secs(10);
-    eventually("blackout while paused", wait, || blackout(&env, id));
+    eventually("blackout while paused", wait, || blackout(&env));
 
     // Playing removes it and keeps it off.
-    env.ok(&["play", id]);
-    eventually("no blackout after play", wait, || !blackout(&env, id));
+    env.ok(&["play"]);
+    eventually("no blackout after play", wait, || !blackout(&env));
     std::thread::sleep(Duration::from_millis(2500));
-    assert!(!blackout(&env, id), "black while playing");
+    assert!(!blackout(&env), "black while playing");
 
     // Any player command removes it; still paused, it comes back.
-    env.ok(&["pause", id]);
-    eventually("blackout after pause", wait, || blackout(&env, id));
-    env.ok(&["seek", id, "+5"]);
-    eventually("no blackout after a command", wait, || !blackout(&env, id));
-    eventually("blackout again", wait, || blackout(&env, id));
+    env.ok(&["pause"]);
+    eventually("blackout after pause", wait, || blackout(&env));
+    env.ok(&["seek", "+5"]);
+    eventually("no blackout after a command", wait, || !blackout(&env));
+    eventually("blackout again", wait, || blackout(&env));
 
-    if backend == "chrome" {
-        // Mouse input on the overlay removes it; synthetic moves of a resting
-        // pointer (same position) do not.
-        let fire = |ty: &str, x: i32| {
-            let script = format!(
-                "document.getElementById('__tvctl_blackout').dispatchEvent(new MouseEvent('{ty}', \
-                 {{bubbles: true, cancelable: true, screenX: {x}, screenY: 100}})), \
-                 window.__tvctlBlackout.shown"
-            );
-            env.ok(&["__eval", id, &script])
-        };
-        assert_eq!(fire("mousemove", 100), json!(true));
-        assert_eq!(fire("mousemove", 101), json!(true));
-        assert_eq!(fire("mousemove", 120), json!(false));
-        eventually("blackout after the mouse", wait, || blackout(&env, id));
-        assert_eq!(fire("mousedown", 120), json!(false));
+    // Mouse input on the overlay removes it; synthetic moves of a resting
+    // pointer (same position) do not.
+    let fire = |ty: &str, x: i32| {
+        let script = format!(
+            "document.getElementById('__tvctl_blackout').dispatchEvent(new MouseEvent('{ty}', \
+             {{bubbles: true, cancelable: true, screenX: {x}, screenY: 100}})), \
+             window.__tvctlBlackout.shown"
+        );
+        env.ok(&["__eval", &script])
+    };
+    assert_eq!(fire("mousemove", 100), json!(true));
+    assert_eq!(fire("mousemove", 101), json!(true));
+    assert_eq!(fire("mousemove", 120), json!(false));
+    eventually("blackout after the mouse", wait, || blackout(&env));
+    assert_eq!(fire("mousedown", 120), json!(false));
+
+    // A new open in the same window starts without blackout and still gets it.
+    let v = open(&env, "/video/2", &["--paused"]);
+    assert_eq!(v["window"]["blackout"], false);
+    eventually("blackout in the replaced page", wait, || blackout(&env));
+}
+
+#[test]
+#[ignore = "opens windows; run with --ignored"]
+fn eval() {
+    let env = Env::new();
+    env.up();
+    open(&env, "/video/1", &[]);
+    assert_eq!(env.ok(&["__eval", "Promise.resolve(6 * 7)"]), json!(42));
+    assert_eq!(env.ok(&["__eval", "document.title"]), json!(""));
+    assert!(
+        env.err(&["__eval", "throw new Error('nope')"])
+            .contains("nope")
+    );
+}
+
+#[test]
+#[ignore = "opens windows; run with --ignored"]
+fn plugin_can_request_navigation() {
+    let env = Env::new();
+    env.up();
+    // In a new window, and in the existing one.
+    for _ in 0..2 {
+        let v = open(&env, "/video/2?redirect=1", &[]);
+        let at = player(&v, "url");
+        let at = at.as_str().unwrap();
+        assert!(at.contains("landed=1") && !at.contains("redirect"), "{at}");
     }
 }
 
 #[test]
 #[ignore = "opens windows; run with --ignored"]
-fn webview_blackout() {
-    blackout_suite("webview");
-}
-
-#[test]
-#[ignore = "opens windows; run with --ignored"]
-fn chrome_blackout() {
-    blackout_suite("chrome");
-}
-
-#[test]
-#[ignore = "opens windows; run with --ignored"]
-fn eval_is_chrome_only() {
-    let env = Env::new();
-    env.up();
-    let c = open(&env, "chrome", &[]);
-    let w = open(&env, "webview", &[]);
-    let cid = c["id"].as_str().unwrap();
-    assert_eq!(
-        env.ok(&["__eval", cid, "Promise.resolve(6 * 7)"]),
-        json!(42)
-    );
-    assert_eq!(env.ok(&["__eval", cid, "document.title"]), json!(""));
-    assert!(
-        env.err(&["__eval", cid, "throw new Error('nope')"])
-            .contains("nope")
-    );
-    assert!(
-        env.err(&["__eval", w["id"].as_str().unwrap(), "1"])
-            .contains("only available for chrome")
-    );
-}
-
-#[test]
-#[ignore = "opens windows; run with --ignored"]
-fn chrome_plugin_can_request_navigation() {
-    let env = Env::new();
-    env.up();
-    let url = env.url("/video/2?redirect=1");
-    let v = env.ok(&["open", &url, "--backend", "chrome"]);
-    let at = player(&v, "url");
-    let at = at.as_str().unwrap();
-    assert!(at.contains("landed=1") && !at.contains("redirect"), "{at}");
-}
-
-#[test]
-#[ignore = "opens windows; run with --ignored"]
-fn login_switches_to_the_preferred_backend() {
+fn login() {
     let env = Env::new();
     env.up();
     let st = env.ok(&["auth", "status"]);
@@ -765,8 +710,6 @@ fn login_switches_to_the_preferred_backend() {
             .any(|s| s["service"] == "fake" && s["logged_in"] == false),
         "{st}"
     );
-    // Logged out: the first backend (webview) is used.
-    assert_eq!(env.ok(&["open", &env.url("/v")])["backend"], "webview");
     // The fake login page sets the cookie and closes its window, which ends `auth login`.
     assert_eq!(
         env.ok(&["auth", "login", "fake"]),
@@ -776,17 +719,6 @@ fn login_switches_to_the_preferred_backend() {
         env.ok(&["auth", "status", "fake"])["services"][0]["logged_in"],
         true
     );
-    // Logged in: the preferred backend (chrome) is chosen automatically...
-    assert_eq!(env.ok(&["open", &env.url("/v")])["backend"], "chrome");
-    // ...unless one is forced.
-    assert_eq!(
-        env.ok(&["open", &env.url("/v"), "--backend", "webview"])["backend"],
-        "webview"
-    );
-    // The state survives a server restart.
-    env.ok(&["server", "down"]);
-    env.up();
-    assert_eq!(env.ok(&["open", &env.url("/v")])["backend"], "chrome");
     assert!(
         env.err(&["auth", "login", "nosuch"])
             .contains("no plugin named")
@@ -795,18 +727,20 @@ fn login_switches_to_the_preferred_backend() {
 
 #[test]
 #[ignore = "opens windows; run with --ignored"]
-fn chrome_window_closed_by_the_user_is_forgotten() {
+fn window_closed_by_the_user_is_forgotten() {
     let env = Env::new();
     env.up();
-    let v = open(&env, "chrome", &[]);
-    let id = v["id"].as_str().unwrap().to_string();
-    // Close the window from the page itself, as a user closing it would.
+    // The fake login page closes its own window, as a user closing it would.
     // The page may close before `open` finishes, so its result is not checked.
-    let _ = env.run(&["open", &env.url("/login"), "--backend", "chrome"]);
+    let _ = env.run(&["open", &env.url("/login")]);
     eventually(
-        "login window to close itself",
+        "the window to close itself",
         Duration::from_secs(10),
-        || env.ok(&["list"])["players"].as_array().unwrap().len() == 1,
+        || no_player(&env),
     );
-    assert!(env.ok(&["status", &id])["player"]["loaded"] == true);
+    assert!(env.err(&["status"]).contains("no player is open"));
+    // The next open makes a new window.
+    let v = open(&env, "/video/1", &[]);
+    assert_eq!(player(&v, "loaded"), true);
+    assert_eq!(history_length(&env), 1);
 }

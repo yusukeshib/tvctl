@@ -43,15 +43,6 @@ fn send_to(socket: &Path, req: &Request) -> Result<Value> {
     exchange(stream, req)
 }
 
-/// Read-only, bounded request for shell completion; never starts a server.
-pub fn completion_list() -> Result<Value> {
-    let stream = connect()?;
-    let timeout = Some(Duration::from_millis(200));
-    stream.set_read_timeout(timeout)?;
-    stream.set_write_timeout(timeout)?;
-    exchange(stream, &Request::List)
-}
-
 fn exchange(stream: UnixStream, req: &Request) -> Result<Value> {
     let mut writer = stream.try_clone()?;
     serde_json::to_writer(&mut writer, req)?;
@@ -112,15 +103,6 @@ fn start() -> Result<()> {
         std::thread::sleep(Duration::from_millis(100));
     }
     bail!("server did not start; see {}", log_path().display())
-}
-
-/// `list` without a server: there are no players.
-pub fn list() -> Result<Value> {
-    if is_running() {
-        send(&Request::List)
-    } else {
-        Ok(json!({ "players": [] }))
-    }
 }
 
 pub fn server_down() -> Result<Value> {
@@ -225,9 +207,9 @@ mod tests {
     #[test]
     fn ok_response() {
         let (_d, path, h) = serve_once("{\"ok\":true,\"result\":{\"x\":1}}\n");
-        let v = send_to(&path, &Request::List).unwrap();
+        let v = send_to(&path, &Request::Close).unwrap();
         assert_eq!(v["x"], 1);
-        assert_eq!(h.join().unwrap().trim(), "{\"cmd\":\"list\"}");
+        assert_eq!(h.join().unwrap().trim(), "{\"cmd\":\"close\"}");
     }
 
     #[test]

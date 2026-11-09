@@ -19,36 +19,37 @@ use crate::layout::Layout;
 use crate::protocol::{PlayerAction, Request, Switch, WindowOpts};
 use crate::timeparse::Seek;
 
-const ABOUT: &str = "Play videos and music (YouTube, Spotify, Netflix, Prime Video, ...) in windows and control them from the command line.";
+const ABOUT: &str = "Play videos and music (YouTube, Spotify, Netflix, Prime Video, ...) in a window and control it from the command line.";
 
 const LONG_ABOUT: &str = "\
-Play videos and music (YouTube, Spotify, Netflix, Prime Video, ...) in windows and control them from the command line.
+Play videos and music (YouTube, Spotify, Netflix, Prime Video, ...) in a window and control it from the command line.
 
 Workflow:
-  1. `tvctl open <URL>` opens a player window and prints its `id`.
-  2. Control it with `tvctl <command> <ID> ...`; `tvctl list` shows open players.
-  3. `tvctl close <ID>`.
+  1. `tvctl open <URL>` plays the URL in the player window. There is one player
+     window: it opens if there is none; otherwise the URL replaces what it shows.
+  2. Control it with `tvctl <command> ...` (no id: commands act on the player).
+  3. `tvctl close` closes the window.
   Player and auth commands need the background server: start it once with
   `tvctl server up` and stop it with `tvctl server down`. Nothing else starts
   or stops it; commands that need it fail while it is not running.
 
 Each service is a plugin. `tvctl plugins` shows, per plugin, the URL domains it
-handles, its `actions` (supported player commands) and `unsupported_actions` per
-backend. Unsupported commands fail with an error that lists the supported ones.";
+handles and its `actions` (supported player commands). Unsupported commands
+fail with an error that lists the supported ones.";
 
 const AFTER_LONG_HELP: &str = "\
 Output:
   Every successful command prints one JSON document to stdout and exits 0,
   except `config <shell>`, which prints shell code for eval.
   Player commands (open, status, play, seek, ...) print:
-    {\"id\": \"1\", \"service\": \"youtube\", \"backend\": \"webview\" | \"chrome\",
-     \"player\": {...}, \"window\": {...}}
+    {\"service\": \"youtube\", \"player\": {...}, \"window\": {...}}
+  With no player window open, player commands (including status) fail.
   `player` comes from the plugin. Common fields: `state` (\"playing\", \"paused\",
   \"buffering\", \"ended\", \"unstarted\", \"cued\"), `title`, `current_time` and
   `duration` (seconds), `volume` (0-100), `muted`, `playback_rate`, `subtitles`,
   `quality`, `available_qualities`. Fields a plugin cannot report are null or absent.
   `window`: `position` {x, y} and `outer_size` of the window frame, `size` of the
-  video area, `fullscreen`, `on_top`, `blackout` (the window has turned black
+  video area, `fullscreen`, `blackout` (the window has turned black
   after 60 s paused or ended; the mouse, playback or a player command other
   than status brings the picture back), `work_area` (usable screen area). Coordinates are logical
   pixels from the top-left of the main screen.
@@ -63,15 +64,13 @@ Examples:
   tvctl open 'https://open.spotify.com/album/5Z9iiGl2FcIfa3BMiv6OIw'
   tvctl open 'https://www.netflix.com/watch/81716297' --subtitles ja
   tvctl open 'https://www.amazon.com/gp/video/detail/B0GHXVBQLM' --subtitles ja
-  tvctl status 1                  # read state, time, title, window
-  tvctl seek 1 +30                # relative; `seek 1 1:30` is absolute
-  tvctl subtitles 1 ja            # Japanese subtitles (auto-translated if needed)
-  tvctl window 1 --layout left    # snap to the left half of the screen
-  tvctl screenshot 1 /tmp/now.png # see what the window shows
-  tvctl duck on --apps ChatGPT    # lower players while ChatGPT speaks
+  tvctl status                    # read state, time, title, window
+  tvctl seek +30                  # relative; `seek 1:30` is absolute
+  tvctl subtitles ja              # Japanese subtitles (auto-translated if needed)
+  tvctl window --layout left      # snap to the left half of the screen
+  tvctl screenshot /tmp/now.png   # see what the window shows
+  tvctl duck on --apps ChatGPT    # lower the player while ChatGPT speaks
   tvctl auth login youtube        # one-time login (needed for Spotify, Netflix, Prime Video, Crunchyroll)";
-
-const ID: &str = "Player id, from the output of `open` or `list`";
 
 #[derive(Parser)]
 #[command(version, about = ABOUT, long_about = LONG_ABOUT, after_long_help = AFTER_LONG_HELP)]
@@ -82,20 +81,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Open a URL in a new player window; prints the new player's id and status.
+    /// Play a URL in the player window; prints the player's status.
     ///
-    /// The plugin is chosen by the URL's domain (see `tvctl plugins`). Fails
-    /// unless the background server is running (`tvctl server up`).
+    /// There is one player window: it opens if there is none, otherwise the URL
+    /// replaces what it shows (the window keeps its place, size and fullscreen
+    /// unless window options are given). The plugin is chosen by the URL's
+    /// domain (see `tvctl plugins`). Fails unless the background server is
+    /// running (`tvctl server up`).
     Open {
         /// Video or music URL of a supported service, e.g. a YouTube watch/youtu.be/shorts
         /// URL, an open.spotify.com track/album/playlist URL, a netflix.com
         /// /watch or /title URL, or an amazon.com / amazon.co.jp /gp/video/detail
         /// (Prime Video) URL, or a crunchyroll.com /watch or /series URL.
         url: String,
-        /// Use this backend instead of choosing automatically. `webview`: native
-        /// window, no login. `chrome`: tvctl's Chrome profile (logins, DRM).
-        #[arg(long, value_enum)]
-        backend: Option<plugin::BackendKind>,
         /// Start position: seconds (90), clock (1:30, 1:02:03) or units (1m30s).
         /// Overrides `t=` in the URL.
         #[arg(long, value_name = "TIME")]
@@ -109,113 +107,68 @@ enum Cmd {
         subtitles: Option<String>,
         #[command(flatten)]
         window: GeometryArgs,
-        /// Start in fullscreen.
+        /// Fullscreen.
         #[arg(long)]
         fullscreen: bool,
-        /// Keep the window above other windows (webview backend only).
-        #[arg(long)]
-        on_top: bool,
     },
-    /// List open players with their id, service, backend, title and window.
-    List,
-    /// Show a player's playback and window status.
-    Status {
-        #[arg(help = ID)]
-        id: String,
-    },
+    /// Show the player's playback and window status.
+    Status,
     /// Start or resume playback.
-    Play {
-        #[arg(help = ID)]
-        id: String,
-    },
+    Play,
     /// Pause playback.
-    Pause {
-        #[arg(help = ID)]
-        id: String,
-    },
+    Pause,
     /// Toggle between playing and paused.
-    Toggle {
-        #[arg(help = ID)]
-        id: String,
-    },
+    Toggle,
     /// Go to the next item (track, album/playlist entry).
-    Next {
-        #[arg(help = ID)]
-        id: String,
-    },
+    Next,
     /// Go to the previous item.
-    Prev {
-        #[arg(help = ID)]
-        id: String,
-    },
+    Prev,
     /// Seek to an absolute position or by a relative offset.
     Seek {
-        #[arg(help = ID)]
-        id: String,
         /// Absolute: 90, 1:30, 1:02:03, 1m30s. Relative: +10, -30, -1m.
         #[arg(allow_hyphen_values = true)]
         position: String,
     },
     /// Skip forward.
     Forward {
-        #[arg(help = ID)]
-        id: String,
         /// How far: 10, 1:00, 2m.
         #[arg(default_value = "10")]
         duration: String,
     },
     /// Skip back.
     Back {
-        #[arg(help = ID)]
-        id: String,
         /// How far: 10, 1:00, 2m.
         #[arg(default_value = "10")]
         duration: String,
     },
     /// Show, choose or turn off subtitles.
     Subtitles {
-        #[arg(help = ID)]
-        id: String,
         /// `on`, `off`, `list` (adds `tracks` and `translation_languages` to the
         /// output), or a language code such as `ja` (auto-translated if needed).
         mode: String,
     },
     /// List or choose the audio track (e.g. dubbed languages).
     Audio {
-        #[arg(help = ID)]
-        id: String,
         /// `list` (adds `audio_tracks` to the output) or a language code such as `ja`.
         lang: String,
     },
     /// Set the volume.
     Volume {
-        #[arg(help = ID)]
-        id: String,
         /// 0-100.
         #[arg(value_parser = clap::value_parser!(u8).range(0..=100))]
         level: u8,
     },
     /// Mute audio.
-    Mute {
-        #[arg(help = ID)]
-        id: String,
-    },
+    Mute,
     /// Unmute audio.
-    Unmute {
-        #[arg(help = ID)]
-        id: String,
-    },
+    Unmute,
     /// Set the playback speed.
     Speed {
-        #[arg(help = ID)]
-        id: String,
         /// Rate, e.g. 0.5, 1, 1.5, 2 (0.0625-16).
         rate: f64,
     },
     /// Request a playback quality.
     Quality {
-        #[arg(help = ID)]
-        id: String,
         /// A value from `available_qualities` in `status`, or `auto`. YouTube:
         /// small (240p), medium (360p), large (480p), hd720, hd1080, hd1440, hd2160.
         level: String,
@@ -223,50 +176,38 @@ enum Cmd {
     /// Move or resize the window, snap it to a screen region, or change fullscreen
     /// and always-on-top.
     Window {
-        #[arg(help = ID)]
-        id: String,
         #[command(flatten)]
         geometry: GeometryArgs,
         /// Fullscreen state.
         #[arg(long, value_enum)]
         fullscreen: Option<Switch>,
-        /// Keep the window above other windows (webview backend only).
-        #[arg(long, value_enum)]
-        on_top: Option<Switch>,
     },
     /// Turn fullscreen on, off, or toggle it.
     Fullscreen {
-        #[arg(help = ID)]
-        id: String,
         /// on, off or toggle.
         #[arg(value_enum, default_value = "toggle")]
         mode: Switch,
     },
     /// Save a PNG of what the player window shows (works when it is covered).
     Screenshot {
-        #[arg(help = ID)]
-        id: String,
         /// Output file (.png).
         path: std::path::PathBuf,
     },
-    /// Close a player window.
-    Close {
-        #[arg(help = ID)]
-        id: String,
-    },
+    /// Close the player window.
+    Close,
     /// Log in to a service in tvctl's Chrome profile.
     Auth {
         #[command(subcommand)]
         action: AuthCmd,
     },
-    /// Lower all players while other audio plays (e.g. a voice assistant
+    /// Lower the player while other audio plays (e.g. a voice assistant
     /// speaking), and restore them when it stops.
     Duck {
         #[command(subcommand)]
         action: DuckCmd,
     },
     /// Let the YouTube app on phones and computers cast to this Mac: it appears
-    /// in the app's Cast menu, and what is cast plays in a tvctl player.
+    /// in the app's Cast menu, and what is cast plays in the player window.
     Cast {
         #[command(subcommand)]
         action: CastCmd,
@@ -290,18 +231,18 @@ enum Cmd {
     },
     #[command(name = "__serve", hide = true)]
     Serve,
-    /// Evaluate JavaScript in a Chrome-backend player page (plugin development).
+    /// Evaluate JavaScript in the player page (plugin development).
     #[command(name = "__eval", hide = true)]
-    Eval { id: String, script: String },
+    Eval { script: String },
 }
 
 #[derive(Subcommand)]
 enum ServerCmd {
     /// Start the server (needed by `open`, player commands, `auth` and casting).
     ///
-    /// It keeps running, with or without players, until `server down`.
+    /// It keeps running, with or without a player, until `server down`.
     Up,
-    /// Stop the server and close all players.
+    /// Stop the server and close the player.
     Down,
     /// Show whether the server is running, its pid, players and mode.
     Status,
@@ -309,15 +250,15 @@ enum ServerCmd {
 
 #[derive(Subcommand)]
 enum DuckCmd {
-    /// Turn ducking on (saved; applies whenever players are open).
+    /// Turn ducking on (saved; applies whenever the player is open).
     ///
-    /// While other audio plays, every player plays at `--level` percent of its
+    /// While other audio plays, the player plays at `--level` percent of its
     /// own volume (`volume` and `status` keep showing the player's own volume).
-    /// Other audio is every app except tvctl's players, or only `--apps`.
+    /// Other audio is every app except tvctl's player, or only `--apps`.
     /// macOS 14.2+; macOS asks once for permission to record system audio, on
     /// behalf of the app that started tvctl (e.g. the terminal).
     On {
-        /// Volume while other audio plays, in percent of each player's volume.
+        /// Volume while other audio plays, in percent of the player's volume.
         #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u8).range(0..=100))]
         level: u8,
         /// Only these apps count, comma-separated: app names (ChatGPT), process
@@ -325,9 +266,9 @@ enum DuckCmd {
         #[arg(long, value_delimiter = ',')]
         apps: Option<Vec<String>>,
     },
-    /// Turn ducking off and restore the players' volume.
+    /// Turn ducking off and restore the player's volume.
     Off,
-    /// Show the settings and whether players are lowered now (`ducking`), the
+    /// Show the settings and whether the player is lowered now (`ducking`), the
     /// level of the monitored audio (`peak_db`) and which apps play (`sources`).
     Status,
     /// List the processes playing audio now, with the names usable in `--apps`.
@@ -340,9 +281,10 @@ enum CastCmd {
     /// so start it with `tvctl server up`).
     ///
     /// Devices on the same network then list this Mac in the YouTube app's Cast
-    /// menu. Casting opens a player window; play, pause, seek, volume and the
-    /// queue (next/previous) are controlled from the app. YouTube only (not
-    /// YouTube Music). Uses YouTube's unpublished TV (Lounge) API.
+    /// menu. A cast video plays in the player window, replacing what it shows;
+    /// play, pause, seek, volume and the queue (next/previous) are controlled
+    /// from the app, and player commands such as `pause` or `next` from the
+    /// command line show in the app. YouTube only (not YouTube Music). Uses YouTube's unpublished TV (Lounge) API.
     On {
         /// Name shown in the Cast menu. Default: the saved name, or
         /// "tvctl (<computer name>)".
@@ -405,16 +347,16 @@ fn parse_pair<const SEP: char>(s: &str) -> Result<(f64, f64), String> {
     Ok((parse(a)?, parse(b)?))
 }
 
-fn player(id: String, action: PlayerAction) -> Request {
-    Request::Player { id, action }
+fn player(action: PlayerAction) -> Request {
+    Request::Player { action }
 }
 
-fn seek_request(id: String, seek: Seek) -> Request {
+fn seek_request(seek: Seek) -> Request {
     let (seconds, relative) = match seek {
         Seek::Absolute(s) => (s, false),
         Seek::Relative(s) => (s, true),
     };
-    player(id, PlayerAction::Seek { seconds, relative })
+    player(PlayerAction::Seek { seconds, relative })
 }
 
 /// What a command does: something local, or one request to the server.
@@ -495,18 +437,15 @@ fn plan(cmd: Cmd) -> Result<Plan> {
         }
         Cmd::Open {
             url,
-            backend,
             start,
             paused,
             subtitles,
             window,
             fullscreen,
-            on_top,
         } => {
             let start = start.map(|s| timeparse::parse_duration(&s)).transpose()?;
             Request::Open {
                 url,
-                backend,
                 start,
                 paused,
                 subtitles,
@@ -515,7 +454,6 @@ fn plan(cmd: Cmd) -> Result<Plan> {
                     position: window.position,
                     layout: window.layout,
                     fullscreen: fullscreen.then_some(Switch::On),
-                    on_top: on_top.then_some(Switch::On),
                 },
             }
         }
@@ -523,79 +461,63 @@ fn plan(cmd: Cmd) -> Result<Plan> {
             AuthCmd::Login { service, site } => Request::AuthLogin { service, site },
             AuthCmd::Status { service } => Request::AuthStatus { service },
         },
-        Cmd::List => Request::List,
-        Cmd::Audio { id, lang } => player(id, PlayerAction::Audio { lang }),
-        Cmd::Status { id } => player(id, PlayerAction::Status),
-        Cmd::Play { id } => player(id, PlayerAction::Play),
-        Cmd::Pause { id } => player(id, PlayerAction::Pause),
-        Cmd::Toggle { id } => player(id, PlayerAction::Toggle),
-        Cmd::Next { id } => player(id, PlayerAction::Next),
-        Cmd::Prev { id } => player(id, PlayerAction::Previous),
-        Cmd::Eval { id, script } => Request::Eval { id, script },
-        Cmd::Seek { id, position } => seek_request(id, timeparse::parse_seek(&position)?),
-        Cmd::Forward { id, duration } => {
-            seek_request(id, Seek::Relative(timeparse::parse_duration(&duration)?))
+        Cmd::Audio { lang } => player(PlayerAction::Audio { lang }),
+        Cmd::Status => player(PlayerAction::Status),
+        Cmd::Play => player(PlayerAction::Play),
+        Cmd::Pause => player(PlayerAction::Pause),
+        Cmd::Toggle => player(PlayerAction::Toggle),
+        Cmd::Next => player(PlayerAction::Next),
+        Cmd::Prev => player(PlayerAction::Previous),
+        Cmd::Eval { script } => Request::Eval { script },
+        Cmd::Seek { position } => seek_request(timeparse::parse_seek(&position)?),
+        Cmd::Forward { duration } => {
+            seek_request(Seek::Relative(timeparse::parse_duration(&duration)?))
         }
-        Cmd::Back { id, duration } => {
-            seek_request(id, Seek::Relative(-timeparse::parse_duration(&duration)?))
+        Cmd::Back { duration } => {
+            seek_request(Seek::Relative(-timeparse::parse_duration(&duration)?))
         }
-        Cmd::Subtitles { id, mode } => player(id, PlayerAction::Subtitles { lang: mode }),
-        Cmd::Volume { id, level } => player(
-            id,
-            PlayerAction::Volume {
-                level: Some(level),
-                muted: None,
-            },
-        ),
-        Cmd::Mute { id } => player(
-            id,
-            PlayerAction::Volume {
-                level: None,
-                muted: Some(true),
-            },
-        ),
-        Cmd::Unmute { id } => player(
-            id,
-            PlayerAction::Volume {
-                level: None,
-                muted: Some(false),
-            },
-        ),
-        Cmd::Speed { id, rate } => {
+        Cmd::Subtitles { mode } => player(PlayerAction::Subtitles { lang: mode }),
+        Cmd::Volume { level } => player(PlayerAction::Volume {
+            level: Some(level),
+            muted: None,
+        }),
+        Cmd::Mute => player(PlayerAction::Volume {
+            level: None,
+            muted: Some(true),
+        }),
+        Cmd::Unmute => player(PlayerAction::Volume {
+            level: None,
+            muted: Some(false),
+        }),
+        Cmd::Speed { rate } => {
             if !(0.0625..=16.0).contains(&rate) {
                 return Err(anyhow!("speed must be between 0.0625 and 16"));
             }
-            player(id, PlayerAction::Speed { rate })
+            player(PlayerAction::Speed { rate })
         }
-        Cmd::Quality { id, level } => player(id, PlayerAction::Quality { level }),
+        Cmd::Quality { level } => player(PlayerAction::Quality { level }),
         Cmd::Window {
-            id,
             geometry,
             fullscreen,
-            on_top,
         } => Request::Window {
-            id,
             opts: WindowOpts {
                 size: geometry.size,
                 position: geometry.position,
                 layout: geometry.layout,
                 fullscreen,
-                on_top,
             },
         },
-        Cmd::Fullscreen { id, mode } => Request::Window {
-            id,
+        Cmd::Fullscreen { mode } => Request::Window {
             opts: WindowOpts {
                 fullscreen: Some(mode),
                 ..Default::default()
             },
         },
-        Cmd::Close { id } => Request::Close { id },
-        Cmd::Screenshot { id, path } => {
+        Cmd::Close => Request::Close,
+        Cmd::Screenshot { path } => {
             // The server has a different working directory; send an absolute path.
             let path = std::path::absolute(&path)?;
             Request::Screenshot {
-                id,
                 path: path.to_string_lossy().into_owned(),
             }
         }
@@ -645,10 +567,7 @@ fn run(cmd: Cmd) -> Result<Value> {
                      (for some services, closing the login window is enough)."
                 );
             }
-            match req {
-                Request::List => client::list(),
-                _ => client::send(&req),
-            }
+            client::send(&req)
         }
     }
 }
@@ -710,8 +629,8 @@ mod tests {
         assert!(!ok, "{args:?} should be rejected");
     }
 
-    fn action(id: &str, action: Value) -> Value {
-        json!({ "cmd": "player", "id": id, "action": action })
+    fn action(action: Value) -> Value {
+        json!({ "cmd": "player", "action": action })
     }
 
     #[test]
@@ -779,17 +698,15 @@ mod tests {
         assert_eq!(
             req(&["open", "https://youtu.be/x"]),
             json!({
-                "cmd": "open", "url": "https://youtu.be/x", "backend": null, "start": null,
+                "cmd": "open", "url": "https://youtu.be/x", "start": null,
                 "paused": false, "subtitles": null,
-                "window": { "size": null, "position": null, "layout": null, "fullscreen": null, "on_top": null },
+                "window": { "size": null, "position": null, "layout": null, "fullscreen": null },
             })
         );
         assert_eq!(
             req(&[
                 "open",
                 "u",
-                "--backend",
-                "chrome",
                 "--start",
                 "1:30",
                 "--paused",
@@ -802,12 +719,11 @@ mod tests {
                 "--layout",
                 "bottom-right",
                 "--fullscreen",
-                "--on-top",
             ]),
             json!({
-                "cmd": "open", "url": "u", "backend": "chrome", "start": 90.0, "paused": true, "subtitles": "ja",
+                "cmd": "open", "url": "u", "start": 90.0, "paused": true, "subtitles": "ja",
                 "window": { "size": [640.0, 360.0], "position": [10.0, 20.0], "layout": "bottom-right",
-                            "fullscreen": "on", "on_top": "on" },
+                            "fullscreen": "on" },
             })
         );
         rejects(&["open"]);
@@ -815,127 +731,99 @@ mod tests {
         rejects(&["open", "u", "--size", "640"]);
         rejects(&["open", "u", "--position", "1x2"]);
         rejects(&["open", "u", "--layout", "middle"]);
-        rejects(&["open", "u", "--backend", "firefox"]);
+        // The WebView backend and its options are gone.
+        rejects(&["open", "u", "--backend", "chrome"]);
+        rejects(&["open", "u", "--on-top"]);
     }
 
     #[test]
     fn playback() {
+        assert_eq!(req(&["status"]), action(json!({ "action": "status" })));
+        assert_eq!(req(&["play"]), action(json!({ "action": "play" })));
+        assert_eq!(req(&["pause"]), action(json!({ "action": "pause" })));
+        assert_eq!(req(&["toggle"]), action(json!({ "action": "toggle" })));
+        assert_eq!(req(&["next"]), action(json!({ "action": "next" })));
+        assert_eq!(req(&["prev"]), action(json!({ "action": "previous" })));
         assert_eq!(
-            req(&["status", "1"]),
-            action("1", json!({ "action": "status" }))
+            req(&["__eval", "1+1"]),
+            json!({ "cmd": "eval", "script": "1+1" })
         );
-        assert_eq!(
-            req(&["play", "1"]),
-            action("1", json!({ "action": "play" }))
-        );
-        assert_eq!(
-            req(&["pause", "2"]),
-            action("2", json!({ "action": "pause" }))
-        );
-        assert_eq!(
-            req(&["toggle", "3"]),
-            action("3", json!({ "action": "toggle" }))
-        );
-        assert_eq!(
-            req(&["next", "1"]),
-            action("1", json!({ "action": "next" }))
-        );
-        assert_eq!(
-            req(&["prev", "1"]),
-            action("1", json!({ "action": "previous" }))
-        );
-        assert_eq!(
-            req(&["__eval", "1", "1+1"]),
-            json!({ "cmd": "eval", "id": "1", "script": "1+1" })
-        );
-        rejects(&["play"]);
+        rejects(&["play", "1"]);
     }
 
     #[test]
     fn seeking() {
-        let seek = |s: f64, r: bool| {
-            action(
-                "1",
-                json!({ "action": "seek", "seconds": s, "relative": r }),
-            )
-        };
-        assert_eq!(req(&["seek", "1", "90"]), seek(90.0, false));
-        assert_eq!(req(&["seek", "1", "1:02:03"]), seek(3723.0, false));
-        assert_eq!(req(&["seek", "1", "+10"]), seek(10.0, true));
-        assert_eq!(req(&["seek", "1", "-1m"]), seek(-60.0, true));
-        assert_eq!(req(&["forward", "1"]), seek(10.0, true));
-        assert_eq!(req(&["forward", "1", "30"]), seek(30.0, true));
-        assert_eq!(req(&["back", "1"]), seek(-10.0, true));
-        assert_eq!(req(&["back", "1", "1:00"]), seek(-60.0, true));
-        rejects(&["seek", "1", "soon"]);
-        rejects(&["forward", "1", "-5"]);
+        let seek =
+            |s: f64, r: bool| action(json!({ "action": "seek", "seconds": s, "relative": r }));
+        assert_eq!(req(&["seek", "90"]), seek(90.0, false));
+        assert_eq!(req(&["seek", "1:02:03"]), seek(3723.0, false));
+        assert_eq!(req(&["seek", "+10"]), seek(10.0, true));
+        assert_eq!(req(&["seek", "-1m"]), seek(-60.0, true));
+        assert_eq!(req(&["forward"]), seek(10.0, true));
+        assert_eq!(req(&["forward", "30"]), seek(30.0, true));
+        assert_eq!(req(&["back"]), seek(-10.0, true));
+        assert_eq!(req(&["back", "1:00"]), seek(-60.0, true));
+        rejects(&["seek", "soon"]);
+        rejects(&["forward", "-5"]);
     }
 
     #[test]
     fn tracks_and_audio_settings() {
         assert_eq!(
-            req(&["subtitles", "1", "ja"]),
-            action("1", json!({ "action": "subtitles", "lang": "ja" }))
+            req(&["subtitles", "ja"]),
+            action(json!({ "action": "subtitles", "lang": "ja" }))
         );
         assert_eq!(
-            req(&["subtitles", "1", "off"]),
-            action("1", json!({ "action": "subtitles", "lang": "off" }))
+            req(&["subtitles", "off"]),
+            action(json!({ "action": "subtitles", "lang": "off" }))
         );
         assert_eq!(
-            req(&["audio", "1", "list"]),
-            action("1", json!({ "action": "audio", "lang": "list" }))
+            req(&["audio", "list"]),
+            action(json!({ "action": "audio", "lang": "list" }))
         );
         assert_eq!(
-            req(&["quality", "1", "hd1080"]),
-            action("1", json!({ "action": "quality", "level": "hd1080" }))
+            req(&["quality", "hd1080"]),
+            action(json!({ "action": "quality", "level": "hd1080" }))
         );
         // Quality values are plugin-specific and validated by the plugin.
         assert_eq!(
-            req(&["quality", "1", "very-high"]),
-            action("1", json!({ "action": "quality", "level": "very-high" }))
+            req(&["quality", "very-high"]),
+            action(json!({ "action": "quality", "level": "very-high" }))
         );
         assert_eq!(
-            req(&["volume", "1", "30"]),
-            action(
-                "1",
-                json!({ "action": "volume", "level": 30, "muted": null })
-            )
+            req(&["volume", "30"]),
+            action(json!({ "action": "volume", "level": 30, "muted": null }))
         );
-        rejects(&["volume", "1", "101"]);
+        rejects(&["volume", "101"]);
         assert_eq!(
-            req(&["mute", "1"]),
-            action(
-                "1",
-                json!({ "action": "volume", "level": null, "muted": true })
-            )
+            req(&["mute"]),
+            action(json!({ "action": "volume", "level": null, "muted": true }))
         );
         assert_eq!(
-            req(&["unmute", "1"]),
-            action(
-                "1",
-                json!({ "action": "volume", "level": null, "muted": false })
-            )
+            req(&["unmute"]),
+            action(json!({ "action": "volume", "level": null, "muted": false }))
         );
         assert_eq!(
-            req(&["speed", "1", "1.5"]),
-            action("1", json!({ "action": "speed", "rate": 1.5 }))
+            req(&["speed", "1.5"]),
+            action(json!({ "action": "speed", "rate": 1.5 }))
         );
-        rejects(&["speed", "1", "0"]);
-        rejects(&["speed", "1", "32"]);
+        rejects(&["speed", "0"]);
+        rejects(&["speed", "32"]);
     }
 
     #[test]
     fn window_commands() {
         let opts = |v: Value| {
-            let mut o = json!({ "size": null, "position": null, "layout": null, "fullscreen": null, "on_top": null });
+            let mut o =
+                json!({ "size": null, "position": null, "layout": null, "fullscreen": null });
             for (k, val) in v.as_object().unwrap() {
                 o[k] = val.clone();
             }
             o
         };
         assert_eq!(
-            req(&["window", "1", "--size", "800x450", "--position", "5,6"]),
-            json!({ "cmd": "window", "id": "1", "opts": opts(json!({ "size": [800.0, 450.0], "position": [5.0, 6.0] })) })
+            req(&["window", "--size", "800x450", "--position", "5,6"]),
+            json!({ "cmd": "window", "opts": opts(json!({ "size": [800.0, 450.0], "position": [5.0, 6.0] })) })
         );
         for l in [
             "left",
@@ -950,29 +838,31 @@ mod tests {
             "maximize",
         ] {
             assert_eq!(
-                req(&["window", "1", "--layout", l]),
-                json!({ "cmd": "window", "id": "1", "opts": opts(json!({ "layout": l })) })
+                req(&["window", "--layout", l]),
+                json!({ "cmd": "window", "opts": opts(json!({ "layout": l })) })
             );
         }
         assert_eq!(
-            req(&["window", "1", "--fullscreen", "off", "--on-top", "toggle"]),
-            json!({ "cmd": "window", "id": "1", "opts": opts(json!({ "fullscreen": "off", "on_top": "toggle" })) })
+            req(&["window", "--fullscreen", "off"]),
+            json!({ "cmd": "window", "opts": opts(json!({ "fullscreen": "off" })) })
         );
         assert_eq!(
-            req(&["fullscreen", "1"]),
-            json!({ "cmd": "window", "id": "1", "opts": opts(json!({ "fullscreen": "toggle" })) })
+            req(&["fullscreen"]),
+            json!({ "cmd": "window", "opts": opts(json!({ "fullscreen": "toggle" })) })
         );
         assert_eq!(
-            req(&["fullscreen", "1", "on"]),
-            json!({ "cmd": "window", "id": "1", "opts": opts(json!({ "fullscreen": "on" })) })
+            req(&["fullscreen", "on"]),
+            json!({ "cmd": "window", "opts": opts(json!({ "fullscreen": "on" })) })
         );
-        rejects(&["fullscreen", "1", "maybe"]);
+        rejects(&["fullscreen", "maybe"]);
     }
 
     #[test]
     fn management_commands() {
-        assert_eq!(req(&["list"]), json!({ "cmd": "list" }));
-        assert_eq!(req(&["close", "4"]), json!({ "cmd": "close", "id": "4" }));
+        assert_eq!(req(&["close"]), json!({ "cmd": "close" }));
+        // Commands take no player id, and `list` is gone.
+        rejects(&["close", "4"]);
+        rejects(&["list"]);
         assert_eq!(
             req(&["auth", "login", "youtube"]),
             json!({ "cmd": "auth_login", "service": "youtube", "site": null })
@@ -989,7 +879,7 @@ mod tests {
             req(&["auth", "status", "netflix"]),
             json!({ "cmd": "auth_status", "service": "netflix" })
         );
-        let shot = req(&["screenshot", "1", "shot.png"]);
+        let shot = req(&["screenshot", "shot.png"]);
         let path = shot["path"].as_str().unwrap();
         assert!(
             std::path::Path::new(path).is_absolute() && path.ends_with("shot.png"),

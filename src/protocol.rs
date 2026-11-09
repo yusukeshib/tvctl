@@ -3,42 +3,34 @@
 use serde::{Deserialize, Serialize};
 
 use crate::layout::Layout;
-use crate::plugin::BackendKind;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
     Ping,
     Shutdown,
-    List,
+    /// Show `url` in the player window (opened if there is none), replacing what
+    /// it showed.
     Open {
         url: String,
         start: Option<f64>,
         paused: bool,
         subtitles: Option<String>,
         window: WindowOpts,
-        /// Force a backend instead of choosing automatically.
-        backend: Option<BackendKind>,
     },
     Player {
-        id: String,
         action: PlayerAction,
     },
     Window {
-        id: String,
         opts: WindowOpts,
     },
-    Close {
-        id: String,
-    },
-    /// Evaluate JavaScript in a Chrome-backend player page (plugin development).
+    Close,
+    /// Evaluate JavaScript in the player page (plugin development).
     Eval {
-        id: String,
         script: String,
     },
     /// Save a PNG of the player window's content to `path` (absolute).
     Screenshot {
-        id: String,
         path: String,
     },
     /// Open the service's login page in the Chrome profile; blocks until closed.
@@ -131,7 +123,6 @@ pub struct WindowOpts {
     pub position: Option<(f64, f64)>,
     pub layout: Option<Layout>,
     pub fullscreen: Option<Switch>,
-    pub on_top: Option<Switch>,
 }
 
 impl WindowOpts {
@@ -229,10 +220,11 @@ mod tests {
         let reqs = [
             Request::Ping,
             Request::Shutdown,
-            Request::List,
-            Request::Close { id: "1".into() },
+            Request::Close,
+            Request::Player {
+                action: PlayerAction::Pause,
+            },
             Request::Screenshot {
-                id: "1".into(),
                 path: "/tmp/x.png".into(),
             },
             Request::AuthLogin {
@@ -262,7 +254,6 @@ mod tests {
             Request::CastStatus,
             Request::CastCode,
             Request::Window {
-                id: "1".into(),
                 opts: WindowOpts {
                     layout: Some(Layout::TopRight),
                     ..Default::default()
@@ -295,7 +286,6 @@ mod tests {
         assert!(
             !WindowOpts {
                 fullscreen: Some(Switch::On),
-                on_top: Some(Switch::On),
                 ..Default::default()
             }
             .changes_geometry()

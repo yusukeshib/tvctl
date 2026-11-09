@@ -1,7 +1,7 @@
 # tvctl
 
-A Rust CLI that lets agents (or people) play videos and music in windows on this
-computer and control them from the command line, like a TV remote for your
+A Rust CLI that lets agents (or people) play videos and music in a window on this
+computer and control it from the command line, like a TV remote for your
 screen. (It does not control physical TVs.) Commands print JSON to stdout
 (except `config`, which prints shell code); errors go to stderr with exit code 1.
 
@@ -32,10 +32,9 @@ For Bash, add this to `~/.bashrc` (no bash-completion dependency):
 eval "$(tvctl config bash)"
 ```
 
-Tab completes commands, options, enum values (layouts, backends, on/off/toggle),
-file paths, installed service names, and open player IDs (with service/title
-labels in zsh). Player completion only reads the running server, never starts
-it, and gives up quickly if it is unresponsive. The completion code is generated
+Tab completes commands, options, enum values (layouts, on/off/toggle),
+file paths, installed service names, and open and installed service names. Completion never
+contacts or starts the server. The completion code is generated
 on shell startup so it stays in sync after tvctl upgrades.
 
 ## ChatGPT / Codex plugin and agent skill
@@ -60,27 +59,26 @@ cloud sandboxes cannot show anything on your screen.
 ```sh
 tvctl server up                      # start the background server once
 tvctl open https://youtu.be/jNQXAC9IVRw --layout bottom-right --size 640x360
-# => {"id": "1", "service": "youtube", "backend": "chrome", "player": {...}, "window": {...}}
+# => {"service": "youtube", "player": {...}, "window": {...}}
 
-tvctl status 1
-tvctl play 1 / tvctl pause 1 / tvctl toggle 1
-tvctl next 1 / tvctl prev 1         # next/previous track or playlist entry
-tvctl seek 1 1:30                    # absolute (90, 1:30, 1m30s)
-tvctl seek 1 -10                     # relative (+10, -10)
-tvctl forward 1 30 / tvctl back 1    # default 10 s
-tvctl subtitles 1 ja                 # Japanese; auto-translated if there is no Japanese track
-tvctl subtitles 1 list | on | off
-tvctl audio 1 list | ja              # audio track (e.g. dubbing), where supported
-tvctl quality 1 hd1080               # values: `available_qualities` in status
-tvctl volume 1 50 / tvctl mute 1 / tvctl unmute 1
-tvctl speed 1 1.5
-tvctl window 1 --layout left         # left/right/top/bottom/top-left/.../center/maximize
-tvctl window 1 --layout bottom-right --size 480x270   # anchored to a corner
-tvctl window 1 --size 1280x720 --position 100,50
-tvctl fullscreen 1                   # toggle (or on/off)
-tvctl screenshot 1 shot.png          # PNG of the player window, even when covered
-tvctl list
-tvctl close 1
+tvctl status
+tvctl play / tvctl pause / tvctl toggle
+tvctl next / tvctl prev              # next/previous track or playlist entry
+tvctl seek 1:30                      # absolute (90, 1:30, 1m30s)
+tvctl seek -10                       # relative (+10, -10)
+tvctl forward 30 / tvctl back        # default 10 s
+tvctl subtitles ja                   # Japanese; auto-translated if there is no Japanese track
+tvctl subtitles list | on | off
+tvctl audio list | ja                # audio track (e.g. dubbing), where supported
+tvctl quality hd1080                 # values: `available_qualities` in status
+tvctl volume 50 / tvctl mute / tvctl unmute
+tvctl speed 1.5
+tvctl window --layout left           # left/right/top/bottom/top-left/.../center/maximize
+tvctl window --layout bottom-right --size 480x270   # anchored to a corner
+tvctl window --size 1280x720 --position 100,50
+tvctl fullscreen                     # toggle (or on/off)
+tvctl screenshot shot.png            # PNG of the player window, even when covered
+tvctl close
 
 tvctl auth login youtube             # sign in once in tvctl's Chrome profile
 tvctl auth login spotify
@@ -92,19 +90,25 @@ tvctl auth status
 tvctl plugins                        # services, domains, supported actions
 tvctl plugins netflix                # one service: URL examples, login, notes
 
-tvctl duck on                        # lower players to 10% while other audio plays
+tvctl duck on                        # lower the player to 10% while other audio plays
 tvctl duck on --apps ChatGPT --level 20   # only while ChatGPT plays, to 20%
 tvctl duck status / tvctl duck apps / tvctl duck off
 ```
 
+There is one player window. `open` opens it if there is none; otherwise the URL
+replaces what it shows, and the window keeps its place, size and fullscreen
+unless window options are given. Player commands take no id: they act on that
+window. With no window open they fail (`no player is open`). After `close`, the
+next window opens where the last one was.
+
 Player, `auth` and `cast code` commands need the background server. Start it
-with `tvctl server up`; it keeps running, with or without players, until
-`tvctl server down`, which closes all players and quits tvctl's Chrome.
-tvctl's Chrome also quits (and leaves the Dock) a minute after its last player
-closes; the next Chrome player starts it again.
+with `tvctl server up`; it keeps running, with or without a player, until
+`tvctl server down`, which closes the player and quits tvctl's Chrome.
+tvctl's Chrome also quits (and leaves the Dock) a minute after the player
+window closes; the next `open` starts it again.
 Nothing else starts or stops it: without a server those commands fail with
 an error telling you to run `tvctl server up`.
-`tvctl server status` shows its state.
+`tvctl server status` shows its state and what the player shows.
 
 `--size` is the video area; layouts without `--size` fill their screen region.
 `tvctl --help` describes the workflow, the JSON output and error format, and
@@ -112,21 +116,21 @@ examples; `tvctl <command> --help` describes each argument.
 
 ## Ducking
 
-`tvctl duck on` lowers every player while other audio plays (for example a
+`tvctl duck on` lowers the player while other audio plays (for example a
 voice assistant speaking) and restores it when that audio has been silent for
-a moment. "Other audio" is every app except tvctl's own players, or only the
+a moment. "Other audio" is every app except tvctl's own player, or only the
 apps given with `--apps` (app names such as `ChatGPT`, process names, or bundle
 ids; `tvctl duck apps` lists what is playing now). `--level` is the volume
-while lowered, in percent of each player's own volume (default 10). The
+while lowered, in percent of the player's own volume (default 10). The
 setting is saved (`duck.json` in the data directory) and applies whenever
-players are open; `tvctl duck off` turns it off.
+the player is open; `tvctl duck off` turns it off.
 
 - Nothing is rerouted: tvctl measures the other apps' audio with a Core Audio
   process tap (macOS 14.2+), which only copies it. The first time, macOS asks
   for permission to record system audio, on behalf of the app that started
   tvctl (e.g. the terminal); allow it under System Settings > Privacy &
   Security > Screen & System Audio Recording.
-- The volume is lowered inside the player pages, so it works for every
+- The volume is lowered inside the player page, so it works for every
   service, and `volume`/`status` keep showing the player's own volume.
   (Sound a page plays through Web Audio instead of media elements is not
   lowered.)
@@ -137,16 +141,20 @@ players are open; `tvctl duck off` turns it off.
 
 `tvctl cast on` makes this Mac a YouTube cast target: phones and computers on
 the same network list it (as `tvctl (<computer name>)`, or `--name`) in the YouTube app's Cast
-menu. A cast video opens in a tvctl player (Chrome when you are logged in, so
-Premium plays without ads); play, pause, seek, volume and the queue
+menu. A cast video plays in the player window (replacing what it shows, and
+logged in, Premium plays without ads); play, pause, seek, volume and the queue
 (next/previous, the next video when one ends) are controlled from the app, and
-the app shows the player's state. A new video replaces the cast window at the
-same place and size; tapping Disconnect in the app closes it.
+the app shows the player's state. Player commands from the command line show in
+the app too: `pause`, `seek` or `volume` change what the app shows, and `next` /
+`prev` move through the cast queue. A new cast video replaces the previous one in
+the same window; tapping Disconnect in the app closes it. Opening something else
+with `tvctl open` takes the window over: the app shows the cast as stopped, and
+Disconnect then leaves the window alone.
 
 ```sh
 tvctl cast on               # saved; the receiver runs while the server runs
 tvctl cast on --name "Living room"
-tvctl cast status           # running, connected devices (senders), player, video
+tvctl cast status           # running, connected devices (senders), in_player, video
 tvctl cast code             # code for the app's "Link with TV code"
 tvctl cast off
 ```
@@ -176,27 +184,19 @@ turns black again after another 60 seconds. `window.blackout` in the output
 shows whether it is black now (a `screenshot` is black then too).
 `TVCTL_BLACKOUT_SECS` sets the wait when the server starts (0 turns it off).
 
-## Backends
+## Chrome
 
-- **webview**: a native window with a WebView (tao + wry). No dependencies. For
-  plugins built on public embed APIs; no built-in plugin uses it. The server runs
-  as a background app, so these windows do not appear in the Dock or Cmd+Tab.
-- **chrome**: an app window of Google Chrome, driven through the Chrome DevTools
-  Protocol, using a dedicated profile at
-  `~/Library/Application Support/tvctl/chrome-profile`. Used where a login or
-  DRM is needed. Chrome refuses DevTools control of your everyday profile, so
-  tvctl has its own; sign in to each service once with `tvctl auth login`.
-  Always-on-top is not available in this backend.
-
-A plugin lists its backends in order of preference. If a plugin declares
-`prefer_backend_when_logged_in` and you are logged in, that backend is used.
-`open --backend` overrides.
+The player is an app window of Google Chrome, driven through the Chrome
+DevTools Protocol, using a dedicated profile at
+`~/Library/Application Support/tvctl/chrome-profile` (logins persist and DRM
+works). Chrome refuses DevTools control of your everyday profile, so tvctl has
+its own; sign in to each service once with `tvctl auth login`. The server
+itself is a plain background process (no Dock icon or window).
 
 Run tvctl from a terminal on the Mac's own screen. A server started from an
 SSH session cannot use the macOS keychain, where Chrome keeps the key for its
 saved cookies, so logins would not be saved or loaded: such a server refuses
-`auth login` and adds a `warning` to `auth status`, `server status` and Chrome
-players (`server status` also shows `ssh_session`). Stop it with
+`auth login` and adds a `warning` to `auth status`, `server status` and `open` (`server status` also shows `ssh_session`). Stop it with
 `tvctl server down` and start tvctl again from the Mac's screen.
 
 `auth login` opens the login page in a plain Chrome (not controlled, because
@@ -205,13 +205,13 @@ quit that Chrome with Cmd+Q; tvctl then checks the login cookies.
 
 ## Services
 
-| Plugin | Backends | Login | Supported actions |
-|---|---|---|---|
-| `youtube` | chrome | optional (Premium: no ads) | all |
-| `spotify` | chrome | required | play, pause, toggle, next, previous, seek, volume, mute |
-| `netflix` | chrome | required | all except previous, quality |
-| `primevideo` | chrome | required (amazon.com and/or amazon.co.jp account with Prime Video) | all except previous |
-| `crunchyroll` | chrome | required (most titles need Premium) | all except previous |
+| Plugin | Login | Supported actions |
+|---|---|---|
+| `youtube` | optional (Premium: no ads) | all |
+| `spotify` | required | play, pause, toggle, next, previous, seek, volume, mute |
+| `netflix` | required | all except previous, quality |
+| `primevideo` | required (amazon.com and/or amazon.co.jp account with Prime Video) | all except previous |
+| `crunchyroll` | required (most titles need Premium) | all except previous |
 
 Spotify links: tracks, albums, playlists, artists and episodes on
 `open.spotify.com`. A track link plays that track; other pages start from the top.
@@ -271,34 +271,32 @@ tests detect that.
 Each service is a directory `plugins/<name>/`:
 
 - `plugin.toml`:
-  - `name`, `description`, `domains` (subdomains match too), `backends`
+  - `name`, `description`, `domains` (subdomains match too)
   - `examples`: example URLs (each must be on one of the `domains`) and `notes`:
     what agents and users need to know (how to find URLs, limits, accepted
     values, ads, login hints). `tvctl --help` lists every installed service with
     its first example, and `tvctl plugins <name>` shows the rest, so agent
     instructions (`skills/tvctl/SKILL.md`) need no per-service text.
-  - `actions`: supported player actions; optional `[unsupported_actions]` lists
-    actions a backend lacks (e.g. `webview = ["audio"]`). The server refuses
-    other actions with an error listing the supported ones, and
-    `tvctl plugins` shows both, so agents can check before calling.
+  - `actions`: supported player actions. The server refuses other actions with
+    an error listing the supported ones, and `tvctl plugins` shows them, so
+    agents can check before calling.
   - optional `[auth]`: `required` (playback needs a login), `login_url`,
     `cookie_url`, `logged_in_cookies`,
-    `prefer_backend_when_logged_in`, `login_mode` (`plain` by default, or `controlled`).
+    `login_mode` (`plain` by default, or `controlled`).
     Services with several separately signed-in sites (e.g. regional stores)
     name the main site with `site` and add others as
     `[auth.sites.<name>]` with their own `login_url`, `cookie_url` and
     `logged_in_cookies`; `auth login <service> --site <name>` signs in to one,
     and the service counts as logged in when any site is.
-- `webview.html`: the page for the WebView backend.
-- `frame.js` (optional): injected into that WebView's subframes.
-- `chrome.js`: the adapter for the Chrome backend. It is loaded into every
-  document of the player window, so it can restore its page state after reloads.
+- `chrome.js`: the adapter. It is loaded into every document of the player
+  window while that plugin's content is shown, so it can restore its page state
+  after reloads.
 
 Adapters define `window.__tvctl.run(action)`, which returns a status object.
 Actions: `open {url, start, paused, subtitles}`, `status`, `play`, `pause`,
 `toggle`, `next`, `previous`, `seek {seconds, relative}`, `subtitles {lang}`, `audio {lang}`,
 `volume {level, muted}`, `speed {rate}`, `quality {level}`. Unsupported actions
-throw. In the Chrome backend, `open` may return `{"navigate": url}` to be loaded
+throw. `open` may return `{"navigate": url}` to be loaded
 at another URL first.
 
 Built-in plugins are compiled into the binary. Plugins in `$TVCTL_PLUGIN_DIR`
@@ -309,20 +307,20 @@ override built-ins with the same name.
 
 - `TVCTL_SOCKET`: server socket (default `$TMPDIR/tvctl.sock`; the log is
   next to it as `tvctl.log`)
-- `TVCTL_DATA_DIR`: data directory (Chrome profile, login state)
+- `TVCTL_DATA_DIR`: data directory (Chrome profile, cast and duck settings)
 - `TVCTL_PLUGIN_DIR`: external plugin directory
 - `TVCTL_CHROME`: Chrome executable
 - `TVCTL_BLACKOUT_SECS`: how long a player stays paused or ended before it
   turns black (default 60; 0 turns blackout off)
 
-For plugin development, the hidden command `tvctl __eval <ID> <JS>` evaluates
-JavaScript in a Chrome-backend player page and prints the (awaited) result.
+For plugin development, the hidden command `tvctl __eval <JS>` evaluates
+JavaScript in the player page and prints the (awaited) result.
 
 ## Tests
 
 ```sh
 cargo test                                                   # unit tests
-cargo test --test e2e_fake -- --ignored --test-threads=1     # all commands, both backends, offline
+cargo test --test e2e_fake -- --ignored --test-threads=1     # all commands, offline
 cargo test --test e2e_youtube -- --ignored --test-threads=1  # real YouTube (network)
 TVCTL_E2E_PROFILE="$HOME/Library/Application Support/tvctl" \
   cargo test --test e2e_spotify -- --ignored --test-threads=1  # real Spotify (needs login)
