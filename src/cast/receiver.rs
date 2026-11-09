@@ -192,7 +192,11 @@ pub fn run(
             }
             Ok(Event::Paired) => eprintln!("cast: a sender paired through DIAL"),
             Ok(Event::Step(step, reply)) => {
-                let _ = reply.send(player.step(step));
+                let result = player.step(step);
+                // Publish the new ownership first, so a following CLI `next` or
+                // `prev` is routed to the cast queue too.
+                player.publish(cast);
+                let _ = reply.send(result);
             }
             Ok(_) => {}
             Err(RecvTimeoutError::Timeout) => {}
@@ -418,7 +422,7 @@ impl<'a> Controller<'a> {
                     .map_or(self.volume.1, |s| s.trim() == "true");
                 if (level, muted) != self.volume {
                     self.volume = (level, muted);
-                    self.apply_volume();
+                    let _ = self.apply_volume();
                 }
                 self.send(vec![self.volume_message()]);
             }
@@ -543,33 +547,37 @@ impl<'a> Controller<'a> {
 
     /// Runs a command on the cast player; false if there is none or it failed.
     fn command(&mut self, action: PlayerAction) -> bool {
-        let Some(token) = self.player else {
-            return false;
-        };
+        self.command_value(action).is_some()
+    }
+
+    /// `command`, returning the player's response.
+    fn command_value(&mut self, action: PlayerAction) -> Option<Value> {
+        let token = self.player?;
         match self.host.player(token, action) {
             Ok(v) => {
                 self.update_from(&v);
-                true
+                Some(v)
             }
             Err(HostError::Gone) => {
                 // Closed, or replaced from the command line.
                 self.player = None;
                 self.stop(false);
-                false
+                None
             }
             Err(e) => {
                 eprintln!("cast: player: {e}");
-                false
+                None
             }
         }
     }
 
-    fn apply_volume(&mut self) {
+    /// Applies the app's volume to the player; returns the player's response.
+    fn apply_volume(&mut self) -> Option<Value> {
         let (level, muted) = self.volume;
-        self.command(PlayerAction::Volume {
+        self.command_value(PlayerAction::Volume {
             level: Some(level),
             muted: Some(muted),
-        });
+        })
     }
 
     fn set_status(&mut self, status: i64) {
@@ -616,12 +624,27 @@ impl<'a> Controller<'a> {
         let video = self
             .neighbor(step)
             .ok_or_else(|| format!("no {what} video in the cast queue"))?;
-        self.play(video, 0.0)
+        self.advance(video)
+    }
+
+    /// Plays the queue's `video` in place of the cast video, but only while the
+    /// player still shows it (not over something opened from the command line).
+    fn advance(&mut self, video: Video) -> Result<Value, String> {
+        match self.player {
+            Some(token) => self.play_in(video, 0.0, Some(token)),
+            None => Err("the player no longer shows the cast video".into()),
+        }
+    }
+
+    /// Plays `video` from the app: it takes the player over whatever it shows.
+    fn play(&mut self, video: Video, start: f64) -> Result<Value, String> {
+        self.play_in(video, start, None)
     }
 
     /// Plays `video` in the player (replacing what it shows; the window keeps
-    /// its place) and returns the player's response.
-    fn play(&mut self, video: Video, start: f64) -> Result<Value, String> {
+    /// its place) and returns the player's response. With `expect`, only if the
+    /// player still shows that content.
+    fn play_in(&mut self, video: Video, start: f64, expect: Option<u64>) -> Result<Value, String> {
         eprintln!("cast: play {} at {start}", video.id);
         self.player = None;
         self.current = Some(video.clone());
@@ -631,15 +654,24 @@ impl<'a> Controller<'a> {
         self.measured = Instant::now();
         self.send(vec![self.on_state_change(), self.now_playing(), self.nav()]);
         let url = format!("https://www.youtube.com/watch?v={}", video.id);
-        let result = match self.host.open(&url, start) {
+        let result = match self.host.open(&url, start, expect) {
             Ok((token, v)) => {
                 self.player = Some(token);
                 self.update_from(&v);
-                if self.volume != (100, false) {
-                    self.apply_volume();
+                let mut v = v;
+                if self.volume != (100, false)
+                    && let Some(after) = self.apply_volume()
+                {
+                    v = after;
                 }
                 self.status = PLAYING;
                 Ok(v)
+            }
+            Err(HostError::Gone) => {
+                // Something else was opened from the command line meanwhile.
+                eprintln!("cast: not playing {url}: the player shows something else");
+                self.status = STOPPED;
+                Err("the player no longer shows the cast video".into())
             }
             Err(e) => {
                 eprintln!("cast: opening {url}: {e}");
@@ -675,7 +707,7 @@ impl<'a> Controller<'a> {
             Some("ended") => {
                 match self.neighbor(1) {
                     Some(next) => {
-                        let _ = self.play(next, 0.0);
+                        let _ = self.advance(next);
                     }
                     None => {
                         if self.status != STOPPED {
@@ -716,6 +748,8 @@ mod tests {
         /// Token of what the player shows; None when the window is closed.
         showing: Mutex<Option<u64>>,
         next: Mutex<u64>,
+        /// The page's (level, muted); a new page starts at (100, false).
+        volume: Mutex<(u64, bool)>,
     }
 
     impl FakeHost {
@@ -740,13 +774,22 @@ mod tests {
     }
 
     impl Host for FakeHost {
-        fn open(&self, url: &str, start: f64) -> Result<(u64, Value), HostError> {
+        fn open(
+            &self,
+            url: &str,
+            start: f64,
+            expect: Option<u64>,
+        ) -> Result<(u64, Value), HostError> {
+            if let Some(token) = expect {
+                self.check(token)?;
+            }
             self.calls
                 .lock()
                 .unwrap()
                 .push(format!("open {url} {start}"));
             self.replace();
             *self.state.lock().unwrap() = "playing".into();
+            *self.volume.lock().unwrap() = (100, false);
             let token = *self.next.lock().unwrap();
             Ok((
                 token,
@@ -761,8 +804,12 @@ mod tests {
             if a["action"] != "status" {
                 self.calls.lock().unwrap().push(format!("{token} {a}"));
             }
+            let mut volume = self.volume.lock().unwrap();
+            if a["action"] == "volume" {
+                *volume = (a["level"].as_u64().unwrap(), a["muted"] == true);
+            }
             Ok(json!({
-                "player": { "state": *self.state.lock().unwrap(), "current_time": 5, "duration": 100, "volume": 100, "muted": false },
+                "player": { "state": *self.state.lock().unwrap(), "current_time": 5, "duration": 100, "volume": volume.0, "muted": volume.1 },
             }))
         }
         fn close(&self, token: u64) -> Result<(), HostError> {
@@ -916,5 +963,58 @@ mod tests {
             host.calls().last().unwrap(),
             "open https://www.youtube.com/watch?v=b 0"
         );
+    }
+
+    #[test]
+    fn queue_advance_does_not_replace_other_content() {
+        let host = FakeHost::default();
+        let mut c = controller(&host);
+        c.handle(vec![msg(
+            "setPlaylist",
+            json!({"listId": "RQ1", "videoId": "a", "currentIndex": "0", "videoIds": "a,b,c"}),
+        )]);
+        // Something else is opened from the command line before the receiver
+        // notices; neither the end of the video nor a CLI step may replace it.
+        host.replace();
+        let e = c.step(1).unwrap_err();
+        assert!(e.contains("no longer shows the cast video"), "{e}");
+        assert_eq!(*host.showing.lock().unwrap(), Some(2));
+        let mut c = controller(&host);
+        c.play(video("a"), 0.0).unwrap();
+        c.current = Some(Video {
+            id: "a".into(),
+            index: Some(0),
+        });
+        c.video_ids = vec!["a".into(), "b".into()];
+        host.replace();
+        *host.state.lock().unwrap() = "ended".into();
+        let token = c.player;
+        // The race: `ended` read before the takeover is seen.
+        assert_eq!(
+            c.advance(video("b")).unwrap_err(),
+            "the player no longer shows the cast video"
+        );
+        assert!(token.is_some() && c.player.is_none());
+        assert_eq!(c.status, STOPPED);
+        assert_eq!(*host.showing.lock().unwrap(), Some(4));
+        // A new video cast from the app still takes the player over.
+        c.play(video("z"), 0.0).unwrap();
+        assert_eq!(*host.showing.lock().unwrap(), Some(5));
+    }
+
+    #[test]
+    fn step_reports_the_restored_volume() {
+        let host = FakeHost::default();
+        let mut c = controller(&host);
+        c.handle(vec![
+            msg(
+                "setPlaylist",
+                json!({"listId": "RQ1", "videoId": "a", "currentIndex": "0", "videoIds": "a,b"}),
+            ),
+            msg("setVolume", json!({"volume": "30", "muted": "true"})),
+        ]);
+        let v = c.step(1).unwrap();
+        assert_eq!(v["player"]["volume"], 30);
+        assert_eq!(v["player"]["muted"], true);
     }
 }

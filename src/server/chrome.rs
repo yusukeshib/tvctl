@@ -411,15 +411,26 @@ impl Backend {
     /// replacing what it showed, and runs the adapter's `open`. Returns the new
     /// content's generation with the response; player commands given that
     /// generation fail with `Gone::Replaced` once something else is opened.
-    pub fn open(&self, plugin: &Plugin, action: Value, opts: &WindowOpts) -> Result<(u64, Value)> {
+    /// With `expect`, it only replaces content `expect` (checked under the
+    /// open lock, so a concurrent `open` cannot be overwritten).
+    pub fn open(
+        &self,
+        plugin: &Plugin,
+        action: Value,
+        opts: &WindowOpts,
+        expect: Option<u64>,
+    ) -> Result<(u64, Value)> {
         let _busy = Busy::new(&self.shared);
         let _open = self.open_lock.lock().unwrap();
+        if expect.is_some() {
+            self.player(expect)?;
+        }
         let generation = self.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
         let result = self.open_inner(generation, plugin, action, opts);
         if result.is_err() {
             // A failed open leaves no player: close the window (which may keep a
             // stream or session busy).
-            let _ = self.close(Some(generation));
+            let _ = self.close_unlocked(Some(generation));
         }
         result.map(|v| (generation, v))
     }
@@ -555,8 +566,15 @@ impl Backend {
         Ok(player)
     }
 
+    /// Holds the open lock for operations on content `expect`, so the check and
+    /// the operation cannot interleave with an `open` that replaces it.
+    fn guard_for(&self, expect: Option<u64>) -> Option<std::sync::MutexGuard<'_, ()>> {
+        expect.map(|_| self.open_lock.lock().unwrap())
+    }
+
     /// Runs a player action on content `expect` (any content when None).
     pub fn action(&self, expect: Option<u64>, action: Value) -> Result<Value> {
+        let _guard = self.guard_for(expect);
         let (inst, player) = self.player(expect)?;
         let result = run_adapter(&inst, &player, &action, Duration::from_secs(20))?;
         self.respond(&inst, &player, result)
@@ -576,6 +594,12 @@ impl Backend {
 
     /// Closes the player window if it shows content `expect` (any when None).
     pub fn close(&self, expect: Option<u64>) -> Result<Value> {
+        let _guard = self.guard_for(expect);
+        self.close_unlocked(expect)
+    }
+
+    /// `close` for callers that hold the open lock already.
+    fn close_unlocked(&self, expect: Option<u64>) -> Result<Value> {
         let (inst, player) = self.player(expect)?;
         inst.cdp.call(
             "Target.closeTarget",

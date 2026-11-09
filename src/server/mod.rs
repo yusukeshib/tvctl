@@ -36,7 +36,7 @@ fn host_error(e: anyhow::Error) -> HostError {
 }
 
 impl cast::Host for Router {
-    fn open(&self, url: &str, start: f64) -> Result<(u64, Value), HostError> {
+    fn open(&self, url: &str, start: f64, expect: Option<u64>) -> Result<(u64, Value), HostError> {
         let (plugin, url) = self
             .registry
             .for_url(url)
@@ -49,7 +49,7 @@ impl cast::Host for Router {
             "subtitles": null,
         });
         self.chrome
-            .open(plugin, action, &WindowOpts::default())
+            .open(plugin, action, &WindowOpts::default(), expect)
             .map_err(host_error)
     }
 
@@ -150,7 +150,7 @@ impl Router {
                     "subtitles": subtitles,
                 });
                 self.chrome
-                    .open(plugin, action, &window)
+                    .open(plugin, action, &window, None)
                     .map(|(_, v)| v)
                     .map_err(err)
             }
