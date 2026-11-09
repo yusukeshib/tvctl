@@ -213,7 +213,10 @@ fn serve_ssdp(socket: UdpSocket, device: &Device, port: u16, stop: &AtomicBool) 
         if let Some(reply) = search_reply(&msg, &device.uuid, &location)
             && let Some(s) = &reply_socket
         {
-            let _ = s.send_to(reply.as_bytes(), peer);
+            match s.send_to(reply.as_bytes(), peer) {
+                Ok(_) => super::trace(format_args!("SSDP search from {peer}, answered")),
+                Err(e) => super::trace(format_args!("SSDP search from {peer}, reply failed: {e}")),
+            }
         }
     }
     notify(&socket, &device.uuid, port, "ssdp:byebye");
@@ -351,6 +354,14 @@ fn serve_http(listener: TcpListener, device: &Arc<Device>, stop: &AtomicBool) {
                 Err(_) => return,
             };
             let (status, headers, body) = respond(&device, &req, &base);
+            let peer = stream
+                .peer_addr()
+                .map(|a| a.to_string())
+                .unwrap_or_default();
+            super::trace(format_args!(
+                "DIAL {} {} from {peer} -> {status}",
+                req.method, req.path
+            ));
             let mut out = format!(
                 "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n",
                 body.len()

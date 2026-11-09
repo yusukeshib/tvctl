@@ -119,7 +119,8 @@ Chrome profile, not the user's everyday browser.
   player command, the player is gone; open it again).
 - A `warning` about an SSH session (or `auth login` refused for that reason):
   the tvctl server was started over SSH, where Chrome cannot use the macOS
-  keychain, so logins are not saved or loaded. Run `tvctl server down` and ask
+  keychain, so logins are not saved or loaded (and phones may not find the cast
+  receiver). Run `tvctl server down` and ask
   the user to run tvctl from a terminal on the Mac's own screen.
 - `tvctl duck status` shows `"monitoring": true` but players are never lowered
   (`peak_db` stays null while other audio plays): macOS has not granted system

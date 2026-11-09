@@ -147,7 +147,8 @@ logged in, Premium plays without ads); play, pause, seek, volume and the queue
 the app shows the player's state. Player commands from the command line show in
 the app too: `pause`, `seek` or `volume` change what the app shows, and `next` /
 `prev` move through the cast queue. A new cast video replaces the previous one in
-the same window; tapping Disconnect in the app closes it. Opening something else
+the same window; tapping Disconnect in the app closes it, while swiping the
+app's player down to search for the next video does not stop it. Opening something else
 with `tvctl open` takes the window over: the app shows the cast as stopped, and
 Disconnect then leaves the window alone.
 
@@ -195,7 +196,8 @@ itself is a plain background process (no Dock icon or window).
 
 Run tvctl from a terminal on the Mac's own screen. A server started from an
 SSH session cannot use the macOS keychain, where Chrome keeps the key for its
-saved cookies, so logins would not be saved or loaded: such a server refuses
+saved cookies, so logins would not be saved or loaded (and phones may not find
+its cast receiver on the network): such a server refuses
 `auth login` and adds a `warning` to `auth status`, `server status` and `open` (`server status` also shows `ssh_session`). Stop it with
 `tvctl server down` and start tvctl again from the Mac's screen.
 
@@ -312,6 +314,8 @@ override built-ins with the same name.
 - `TVCTL_CHROME`: Chrome executable
 - `TVCTL_BLACKOUT_SECS`: how long a player stays paused or ended before it
   turns black (default 60; 0 turns blackout off)
+- `TVCTL_CAST_TRACE`: when set for `server up`, the server log records the
+  cast traffic (messages to and from the YouTube app, DIAL and SSDP requests)
 
 For plugin development, the hidden command `tvctl __eval <JS>` evaluates
 JavaScript in the player page and prints the (awaited) result.
