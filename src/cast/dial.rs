@@ -213,8 +213,10 @@ fn serve_ssdp(socket: UdpSocket, device: &Device, port: u16, stop: &AtomicBool) 
         if let Some(reply) = search_reply(&msg, &device.uuid, &location)
             && let Some(s) = &reply_socket
         {
-            super::trace(format_args!("SSDP search from {peer}, answered"));
-            let _ = s.send_to(reply.as_bytes(), peer);
+            match s.send_to(reply.as_bytes(), peer) {
+                Ok(_) => super::trace(format_args!("SSDP search from {peer}, answered")),
+                Err(e) => super::trace(format_args!("SSDP search from {peer}, reply failed: {e}")),
+            }
         }
     }
     notify(&socket, &device.uuid, port, "ssdp:byebye");

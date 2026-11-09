@@ -941,23 +941,29 @@ mod tests {
     }
 
     #[test]
-    fn leaving_to_play_on_the_phone_keeps_playing() {
-        // The iOS app sends this when its player is swiped down to the miniplayer.
-        let host = FakeHost::default();
-        let mut c = controller(&host);
-        c.handle(vec![msg("loungeStatus", phone_connects())]);
-        c.handle(vec![msg(
-            "setPlaylist",
-            json!({"listId": "RQ1", "videoId": "a", "currentIndex": "0", "videoIds": "a"}),
-        )]);
-        let gone = json!({"devices": "[]", "connectionEventDetails": format!(
-            r#"{{"deviceId":"p1","ui":"true","disconnectBehavior":"{PLAY_ON_PHONE}"}}"#
-        )});
-        c.handle(vec![msg("loungeStatus", gone)]);
-        assert!(c.senders.is_empty());
-        assert_eq!(c.player, Some(1));
-        assert_eq!(c.status, PLAYING);
-        assert!(!host.calls().iter().any(|c| c.starts_with("close")));
+    fn leaving_to_play_on_the_phone_or_screen_initiated_keeps_playing() {
+        // PLAY_ON_PHONE: the iOS app's player swiped down to the miniplayer.
+        for behavior in [PLAY_ON_PHONE, SCREEN_INITIATED] {
+            let host = FakeHost::default();
+            let mut c = controller(&host);
+            c.handle(vec![msg("loungeStatus", phone_connects())]);
+            assert!(c.senders[0].disconnect_stops);
+            c.handle(vec![msg(
+                "setPlaylist",
+                json!({"listId": "RQ1", "videoId": "a", "currentIndex": "0", "videoIds": "a"}),
+            )]);
+            let gone = json!({"devices": "[]", "connectionEventDetails": format!(
+                r#"{{"deviceId":"p1","ui":"true","disconnectBehavior":"{behavior}"}}"#
+            )});
+            c.handle(vec![msg("loungeStatus", gone)]);
+            assert!(c.senders.is_empty(), "{behavior}");
+            assert_eq!(c.player, Some(1), "{behavior}");
+            assert_eq!(c.status, PLAYING, "{behavior}");
+            assert!(
+                !host.calls().iter().any(|c| c.starts_with("close")),
+                "{behavior}"
+            );
+        }
     }
 
     #[test]
