@@ -1,6 +1,6 @@
 [package]
 name = "tvctl"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 description = "Play YouTube, Spotify, Netflix, Prime Video and more in windows on your screen and control them from the command line (built for AI agents)"
 license = "MIT"
