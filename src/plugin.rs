@@ -1,13 +1,9 @@
 //! Service plugins.
 //!
 //! A plugin is a directory `plugins/<name>/` containing a `plugin.toml` manifest
-//! and the scripts for the backends it supports:
+//! and `chrome.js`, the adapter evaluated in the player's Chrome pages.
 //!
-//! * `webview.html` — page loaded into the native WebView backend.
-//! * `frame.js` — optional; injected into the subframes of that WebView.
-//! * `chrome.js` — adapter evaluated in Chrome pages (Chrome backend).
-//!
-//! Every adapter defines `window.__tvctl.run(action)` returning a status object.
+//! The adapter defines `window.__tvctl.run(action)` returning a status object.
 //! Built-in plugins are embedded in the binary; external plugins are read from
 //! `$TVCTL_PLUGIN_DIR` or `${XDG_CONFIG_HOME:-~/.config/tvctl/plugins` and override
 //! built-ins with the same name.
@@ -22,24 +18,8 @@ use url::Url;
 
 static BUILTIN: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/plugins");
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, clap::ValueEnum,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum BackendKind {
-    Webview,
-    Chrome,
-}
-
-impl BackendKind {
-    /// Files a plugin must provide for this backend.
-    fn required_file(self) -> &'static str {
-        match self {
-            BackendKind::Webview => "webview.html",
-            BackendKind::Chrome => "chrome.js",
-        }
-    }
-}
+/// The adapter file every plugin provides.
+const ADAPTER: &str = "chrome.js";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,13 +29,8 @@ pub struct Manifest {
     pub description: String,
     /// Hosts handled by this plugin; subdomains match too.
     pub domains: Vec<String>,
-    /// Supported backends in order of preference.
-    pub backends: Vec<BackendKind>,
     /// Player actions this plugin supports (`status` is always supported).
     pub actions: Vec<String>,
-    /// Actions from `actions` that a specific backend lacks.
-    #[serde(default)]
-    pub unsupported_actions: BTreeMap<BackendKind, Vec<String>>,
     /// Example URLs (shown in `tvctl --help` and `tvctl plugins`); each must be
     /// handled by this plugin.
     #[serde(default)]
@@ -82,14 +57,9 @@ pub const ACTIONS: &[&str] = &[
 ];
 
 impl Manifest {
-    /// Whether `action` is available for this plugin on `backend`.
-    pub fn supports(&self, action: &str, backend: BackendKind) -> bool {
-        action == "status"
-            || (self.actions.iter().any(|a| a == action)
-                && !self
-                    .unsupported_actions
-                    .get(&backend)
-                    .is_some_and(|u| u.iter().any(|a| a == action)))
+    /// Whether `action` is available for this plugin.
+    pub fn supports(&self, action: &str) -> bool {
+        action == "status" || self.actions.iter().any(|a| a == action)
     }
 }
 
@@ -102,7 +72,6 @@ pub struct Auth {
     pub login_url: String,
     pub cookie_url: String,
     pub logged_in_cookies: Vec<String>,
-    pub prefer_backend_when_logged_in: Option<BackendKind>,
     #[serde(default)]
     pub login_mode: LoginMode,
     /// Name of the site described by the fields above, when `sites` lists more.
@@ -211,9 +180,6 @@ impl Plugin {
             if sites.len() > 1 {
                 v["sites"] = serde_json::json!(sites);
             }
-            if let Some(b) = a.prefer_backend_when_logged_in {
-                v["backend_when_logged_in"] = serde_json::json!(b);
-            }
             v
         });
         serde_json::json!({
@@ -221,9 +187,7 @@ impl Plugin {
             "description": m.description,
             "domains": m.domains,
             "examples": m.examples,
-            "backends": m.backends,
             "actions": m.actions,
-            "unsupported_actions": m.unsupported_actions,
             "login": login,
             "notes": m.notes,
             "source": self.source,
@@ -247,14 +211,7 @@ impl Plugin {
         if manifest.domains.is_empty() {
             bail!("plugin {}: `domains` is empty", manifest.name);
         }
-        if manifest.backends.is_empty() {
-            bail!("plugin {}: `backends` is empty", manifest.name);
-        }
-        for a in manifest
-            .actions
-            .iter()
-            .chain(manifest.unsupported_actions.values().flatten())
-        {
+        for a in &manifest.actions {
             if !ACTIONS.contains(&a.as_str()) {
                 bail!(
                     "plugin {}: unknown action {a:?} (known: {})",
@@ -288,14 +245,8 @@ impl Plugin {
                 a.main_site()
             );
         }
-        for b in &manifest.backends {
-            if !files.contains_key(b.required_file()) {
-                bail!(
-                    "plugin {}: backend {b:?} requires {}",
-                    manifest.name,
-                    b.required_file()
-                );
-            }
+        if !files.contains_key(ADAPTER) {
+            bail!("plugin {}: missing {ADAPTER}", manifest.name);
         }
         Ok(Plugin {
             manifest,
@@ -504,14 +455,7 @@ mod tests {
         assert!(!r.plugins().is_empty());
         for p in r.plugins() {
             assert_eq!(p.source, "builtin");
-            for b in &p.manifest.backends {
-                assert!(
-                    p.file(b.required_file()).is_some(),
-                    "{} lacks {}",
-                    p.name(),
-                    b.required_file()
-                );
-            }
+            assert!(p.file(ADAPTER).is_some(), "{} lacks {ADAPTER}", p.name());
             // Agents learn services from `tvctl --help` / `tvctl plugins`.
             assert!(
                 !p.manifest.examples.is_empty(),
@@ -528,9 +472,6 @@ mod tests {
                     Url::parse(&s.cookie_url).unwrap();
                     assert!(!s.logged_in_cookies.is_empty(), "{} {site}", p.name());
                 }
-                if let Some(b) = a.prefer_backend_when_logged_in {
-                    assert!(p.manifest.backends.contains(&b), "{}", p.name());
-                }
             }
         }
     }
@@ -541,19 +482,19 @@ mod tests {
         write_plugin(
             dir.path(),
             "youtube",
-            "name = \"youtube\"\ndomains = [\"youtube.com\"]\nbackends = [\"chrome\"]\nactions = [\"play\"]\n",
+            "name = \"youtube\"\ndomains = [\"youtube.com\"]\nactions = [\"play\"]\n",
             &["chrome.js"],
         );
         write_plugin(
             dir.path(),
             "example",
-            "name = \"example\"\ndomains = [\"example.com\"]\nbackends = [\"webview\"]\nactions = [\"play\"]\n",
-            &["webview.html"],
+            "name = \"example\"\ndomains = [\"example.com\"]\nactions = [\"play\"]\n",
+            &["chrome.js"],
         );
         std::fs::create_dir_all(dir.path().join("not-a-plugin")).unwrap();
         let r = Registry::load_with(Some(dir.path().to_path_buf())).unwrap();
         let yt = r.get("youtube").unwrap();
-        assert_eq!(yt.manifest.backends, vec![BackendKind::Chrome]);
+        assert_eq!(yt.manifest.actions, ["play"]);
         assert_eq!(yt.source, dir.path().join("youtube").display().to_string());
         assert_eq!(
             r.plugins().iter().filter(|p| p.name() == "youtube").count(),
@@ -606,45 +547,28 @@ mod tests {
         };
         assert!(
             parse(
-                "name = \"x\"\ndomains = []\nbackends = [\"chrome\"]\nactions = [\"play\"]",
+                "name = \"x\"\ndomains = []\nactions = [\"play\"]",
                 &["chrome.js"]
             )
             .is_err()
         );
         assert!(
             parse(
-                "name = \"x\"\ndomains = [\"x.com\"]\nbackends = []\nactions = [\"play\"]",
-                &[]
-            )
-            .is_err()
-        );
-        assert!(
-            parse(
-                "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"vlc\"]\nactions = [\"play\"]",
-                &[]
-            )
-            .is_err()
-        );
-        assert!(
-            parse(
-                "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"chrome\"]\nactions = [\"play\"]\ncolor = 1",
+                "name = \"x\"\ndomains = [\"x.com\"]\nactions = [\"play\"]\ncolor = 1",
                 &["chrome.js"]
             )
             .is_err()
         );
-        assert!(
-            parse(
-                "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\"]\nactions = [\"play\"]",
-                &["chrome.js"]
-            )
-            .is_err()
-        );
-        let auth = "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\", \"chrome\"]\nactions = [\"play\"]\n[auth]\nlogin_url = \"https://x.com/login\"\ncookie_url = \"https://x.com\"\nlogged_in_cookies = [\"sid\"]\nprefer_backend_when_logged_in = \"chrome\"\n";
-        let p = parse(auth, &["webview.html", "chrome.js"]).unwrap();
-        assert_eq!(
-            p.manifest.auth.unwrap().prefer_backend_when_logged_in,
-            Some(BackendKind::Chrome)
-        );
+        // Manifests from before the WebView backend was removed.
+        let e = parse(
+            "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"chrome\"]\nactions = [\"play\"]",
+            &["chrome.js"],
+        )
+        .unwrap_err();
+        assert!(format!("{e:#}").contains("backends"), "{e:#}");
+        let auth = "name = \"x\"\ndomains = [\"x.com\"]\nactions = [\"play\"]\n[auth]\nlogin_url = \"https://x.com/login\"\ncookie_url = \"https://x.com\"\nlogged_in_cookies = [\"sid\"]\n";
+        let p = parse(auth, &["chrome.js"]).unwrap();
+        assert_eq!(p.manifest.auth.unwrap().logged_in_cookies, ["sid"]);
     }
 
     #[test]
@@ -652,29 +576,19 @@ mod tests {
         let parse = |toml: &str| {
             let mut m = BTreeMap::new();
             m.insert("plugin.toml".to_string(), toml.to_string());
-            m.insert("webview.html".to_string(), String::new());
             m.insert("chrome.js".to_string(), String::new());
             Plugin::from_files(m, "t".into())
         };
-        let base = "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"webview\", \"chrome\"]\n";
+        let base = "name = \"x\"\ndomains = [\"x.com\"]\n";
         let e = parse(&format!("{base}actions = [\"fly\"]")).unwrap_err();
         assert!(format!("{e:#}").contains("unknown action"), "{e:#}");
-        let e = parse(&format!(
-            "{base}actions = [\"play\"]\n[unsupported_actions]\nwebview = [\"fly\"]"
-        ))
-        .unwrap_err();
-        assert!(format!("{e:#}").contains("unknown action"), "{e:#}");
         assert!(parse(base).is_err(), "actions is required");
-        let p = parse(&format!(
-            "{base}actions = [\"play\", \"audio\"]\n[unsupported_actions]\nwebview = [\"audio\"]"
-        ))
-        .unwrap();
+        let p = parse(&format!("{base}actions = [\"play\", \"audio\"]")).unwrap();
         let m = &p.manifest;
-        assert!(m.supports("status", BackendKind::Webview));
-        assert!(m.supports("play", BackendKind::Webview));
-        assert!(m.supports("audio", BackendKind::Chrome));
-        assert!(!m.supports("audio", BackendKind::Webview));
-        assert!(!m.supports("seek", BackendKind::Chrome));
+        assert!(m.supports("status"));
+        assert!(m.supports("play"));
+        assert!(m.supports("audio"));
+        assert!(!m.supports("seek"));
     }
 
     #[test]
@@ -682,40 +596,29 @@ mod tests {
         let r = Registry::load_with(None).unwrap();
         let yt = &r.get("youtube").unwrap().manifest;
         for a in ACTIONS {
-            assert!(yt.supports(a, BackendKind::Chrome), "youtube chrome {a}");
+            assert!(yt.supports(a), "youtube {a}");
         }
         let sp = &r.get("spotify").unwrap().manifest;
         for a in [
             "play", "pause", "toggle", "next", "previous", "seek", "volume",
         ] {
-            assert!(sp.supports(a, BackendKind::Chrome), "spotify {a}");
+            assert!(sp.supports(a), "spotify {a}");
         }
         for a in ["subtitles", "audio", "speed", "quality"] {
-            assert!(!sp.supports(a, BackendKind::Chrome), "spotify {a}");
+            assert!(!sp.supports(a), "spotify {a}");
         }
         let pv = &r.get("primevideo").unwrap().manifest;
-        assert_eq!(pv.backends, [BackendKind::Chrome]);
         for a in ACTIONS {
-            assert_eq!(
-                pv.supports(a, BackendKind::Chrome),
-                *a != "previous",
-                "primevideo {a}"
-            );
+            assert_eq!(pv.supports(a), *a != "previous", "primevideo {a}");
         }
         let nf = &r.get("netflix").unwrap().manifest;
-        assert_eq!(nf.backends, [BackendKind::Chrome]);
         for a in ACTIONS {
             let want = !matches!(*a, "previous" | "quality");
-            assert_eq!(nf.supports(a, BackendKind::Chrome), want, "netflix {a}");
+            assert_eq!(nf.supports(a), want, "netflix {a}");
         }
         let cr = &r.get("crunchyroll").unwrap().manifest;
-        assert_eq!(cr.backends, [BackendKind::Chrome]);
         for a in ACTIONS {
-            assert_eq!(
-                cr.supports(a, BackendKind::Chrome),
-                *a != "previous",
-                "crunchyroll {a}"
-            );
+            assert_eq!(cr.supports(a), *a != "previous", "crunchyroll {a}");
         }
     }
 
@@ -737,7 +640,6 @@ mod tests {
         assert!(pv["notes"].as_array().unwrap().len() > 1);
         let yt = r.describe("youtube").unwrap();
         assert_eq!(yt["login"]["required"], false);
-        assert!(yt["login"].get("backend_when_logged_in").is_none());
         assert!(yt["login"].get("sites").is_none());
         let e = r.describe("hulu").unwrap_err().to_string();
         assert!(
@@ -758,7 +660,7 @@ mod tests {
         files.insert("chrome.js".to_string(), String::new());
         files.insert(
             "plugin.toml".to_string(),
-            "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"chrome\"]\nactions = []\n\
+            "name = \"x\"\ndomains = [\"x.com\"]\nactions = []\n\
              examples = [\"https://y.com/v\"]\n"
                 .to_string(),
         );
@@ -790,7 +692,7 @@ mod tests {
         files.insert("chrome.js".to_string(), String::new());
         files.insert(
             "plugin.toml".to_string(),
-            "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"chrome\"]\nactions = []\n\
+            "name = \"x\"\ndomains = [\"x.com\"]\nactions = []\n\
              [auth]\nsite = \"a\"\nlogin_url = \"https://x.com/l\"\ncookie_url = \"https://x.com\"\n\
              logged_in_cookies = [\"c\"]\n[auth.sites.a]\nlogin_url = \"https://x.com/l\"\n\
              cookie_url = \"https://x.com\"\nlogged_in_cookies = [\"c\"]\n"
@@ -807,8 +709,7 @@ mod tests {
         let mut files = BTreeMap::new();
         files.insert(
             "plugin.toml".to_string(),
-            "name = \"x\"\ndomains = [\"x.com\"]\nbackends = [\"chrome\"]\nactions = [\"play\"]\n"
-                .to_string(),
+            "name = \"x\"\ndomains = [\"x.com\"]\nactions = [\"play\"]\n".to_string(),
         );
         assert!(Plugin::from_files(files.clone(), "t".into()).is_err());
         files.insert("chrome.js".to_string(), String::new());

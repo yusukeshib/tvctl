@@ -2,7 +2,6 @@ name = "spotify"
 description = "Spotify Web Player (open.spotify.com tracks, albums, playlists, artists, episodes)"
 domains = ["open.spotify.com"]
 # Playback needs a login and DRM, so only the Chrome backend works.
-backends = ["chrome"]
 # The web player has no subtitles, audio tracks, speed or quality settings.
 actions = ["play", "pause", "toggle", "next", "previous", "seek", "volume"]
 examples = ["https://open.spotify.com/album/5Z9iiGl2FcIfa3BMiv6OIw", "https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT"]

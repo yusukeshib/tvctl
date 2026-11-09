@@ -113,9 +113,9 @@ pub fn gain_script(gain: f64, fade_ms: u64) -> String {
 
 /// What the ducking monitor needs from the server.
 pub trait Host: Sync {
-    fn player_count(&self) -> usize;
-    /// Runs `script` in the main frame of every player page.
-    fn run_in_players(&self, script: &str);
+    fn has_player(&self) -> bool;
+    /// Runs `script` in the main frame of the player page.
+    fn run_in_player(&self, script: &str);
     /// Pid of tvctl's Chrome (browser process), if it runs.
     fn chrome_pid(&self) -> Option<i32>;
 }
@@ -132,7 +132,6 @@ struct Process {
     app: Option<String>,
     app_bundle_id: Option<String>,
     running_output: bool,
-    responsible: Option<i32>,
     /// Parent, grandparent, ... (nearest first).
     ancestors: Vec<i32>,
 }
@@ -170,18 +169,13 @@ impl Process {
 /// tvctl's own audio processes are never "other" audio.
 struct Own {
     server_pid: i32,
-    /// Responsible process of the server; WebKit's helper processes (which play
-    /// the webview players' audio) get the same one.
-    server_responsible: Option<i32>,
     chrome_pid: Option<i32>,
 }
 
 impl Own {
     fn current(host: &dyn Host) -> Own {
-        let server_pid = std::process::id() as i32;
         Own {
-            server_pid,
-            server_responsible: coreaudio::responsible_pid(server_pid),
+            server_pid: std::process::id() as i32,
             chrome_pid: host.chrome_pid(),
         }
     }
@@ -190,17 +184,8 @@ impl Own {
         if p.pid == self.server_pid || p.ancestors.contains(&self.server_pid) {
             return true;
         }
-        if let Some(chrome) = self.chrome_pid
-            && (p.pid == chrome || p.ancestors.contains(&chrome))
-        {
-            return true;
-        }
-        let webkit = p
-            .bundle_id
-            .as_deref()
-            .is_some_and(|b| b.starts_with("com.apple.WebKit."));
-        // Without the responsible process, any WebKit helper may be ours.
-        webkit && (self.server_responsible.is_none() || p.responsible == self.server_responsible)
+        self.chrome_pid
+            .is_some_and(|chrome| p.pid == chrome || p.ancestors.contains(&chrome))
     }
 }
 
@@ -249,7 +234,6 @@ fn scan() -> Vec<Process> {
                     .map(|s| s.to_string_lossy().into_owned()),
                 app_bundle_id: app_dir.as_deref().and_then(coreaudio::bundle_id),
                 running_output: a.running_output,
-                responsible,
                 ancestors,
             }
         })
@@ -442,13 +426,13 @@ pub fn run(duck: &Duck, host: &dyn Host) {
             let mut inner = duck.inner.lock().unwrap();
             (inner.config.clone(), std::mem::take(&mut inner.changed))
         };
-        if !config.enabled || host.player_count() == 0 {
+        if !config.enabled || !host.has_player() {
             tap = None;
             detector.reset();
             chosen.clear();
             last_scan = None;
             if applied != 1.0 {
-                host.run_in_players(&gain_script(1.0, FADE_UP_MS));
+                host.run_in_player(&gain_script(1.0, FADE_UP_MS));
                 applied = 1.0;
             }
             duck.update(|s| *s = Status::default());
@@ -511,11 +495,11 @@ pub fn run(duck: &Duck, host: &dyn Host) {
             } else {
                 FADE_UP_MS
             };
-            host.run_in_players(&gain_script(target, fade));
+            host.run_in_player(&gain_script(target, fade));
             applied = target;
             last_apply = now;
         } else if target != 1.0 && last_apply.elapsed() >= REASSERT {
-            host.run_in_players(&gain_script(target, 0));
+            host.run_in_player(&gain_script(target, 0));
             last_apply = now;
         }
         if last_refresh.elapsed() >= REFRESH_SOURCES {
@@ -647,18 +631,16 @@ mod tests {
     fn own() -> Own {
         Own {
             server_pid: 10,
-            server_responsible: Some(5),
             chrome_pid: Some(20),
         }
     }
 
     #[test]
-    fn own_processes_are_chrome_descendants_and_our_webkit_helpers() {
+    fn own_processes_are_the_server_and_chrome_descendants() {
         let own = own();
         let chrome_audio = Process {
             pid: 21,
             ancestors: vec![20],
-            responsible: Some(5),
             bundle_id: Some("com.google.Chrome.helper".into()),
             ..Default::default()
         };
@@ -666,20 +648,16 @@ mod tests {
         let users_chrome = Process {
             pid: 31,
             ancestors: vec![30],
-            responsible: Some(30),
             bundle_id: Some("com.google.Chrome.helper".into()),
             ..Default::default()
         };
         assert!(!own.contains(&users_chrome));
-        let webkit = |responsible| Process {
+        // Safari's WebKit helpers are not ours.
+        assert!(!own.contains(&Process {
             pid: 40,
-            responsible: Some(responsible),
             bundle_id: Some("com.apple.WebKit.GPU".into()),
             ..Default::default()
-        };
-        assert!(own.contains(&webkit(5)));
-        // Safari's WebKit helpers are not ours.
-        assert!(!own.contains(&webkit(50)));
+        }));
         assert!(own.contains(&Process {
             pid: 10,
             ..Default::default()

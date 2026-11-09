@@ -1,13 +1,13 @@
 //! `tvctl cast`: a YouTube cast receiver. Phones and computers on the same
 //! network see this Mac in the YouTube app's Cast menu (DIAL); what they cast is
-//! played in a tvctl player and controlled from the app (YouTube Lounge API).
+//! played in the tvctl player and controlled from the app (YouTube Lounge API).
 
 mod dial;
 mod lounge;
 mod receiver;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, mpsc};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::auth;
-use crate::protocol::{PlayerAction, WindowOpts};
+use crate::protocol::PlayerAction;
 
 /// Name used before names included the computer's name.
 const OLD_DEFAULT_NAME: &str = "tvctl";
@@ -145,16 +145,36 @@ pub fn offline_status(config: &Config) -> Value {
         "server_running": false,
         "running": false,
         "senders": [],
-        "player": null,
+        "in_player": false,
         "video_id": null,
     })
 }
 
-/// What the receiver needs from the server: tvctl players.
+/// Why the server could not do what the receiver asked.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HostError {
+    /// The player no longer shows the cast video (closed, or something else was
+    /// opened in it).
+    Gone,
+    Failed(String),
+}
+
+impl std::fmt::Display for HostError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HostError::Gone => write!(f, "the player no longer shows the cast video"),
+            HostError::Failed(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// What the receiver needs from the server: the tvctl player. `open` shows a
+/// URL in the player and returns a token for what it shows; `player` and
+/// `close` act only while the player still shows that.
 pub trait Host: Sync {
-    fn open(&self, url: &str, start: f64, window: WindowOpts) -> Result<Value, String>;
-    fn player(&self, id: &str, action: PlayerAction) -> Result<Value, String>;
-    fn close(&self, id: &str) -> Result<Value, String>;
+    fn open(&self, url: &str, start: f64) -> Result<(u64, Value), HostError>;
+    fn player(&self, token: u64, action: PlayerAction) -> Result<Value, HostError>;
+    fn close(&self, token: u64) -> Result<(), HostError>;
 }
 
 /// Live state for `cast status`.
@@ -162,7 +182,8 @@ pub trait Host: Sync {
 pub struct Status {
     pub running: bool,
     pub senders: Vec<String>,
-    pub player: Option<String>,
+    /// Token (see `Host`) of the cast video in the player.
+    pub player: Option<u64>,
     pub video_id: Option<String>,
     /// HTTP port of the DIAL server.
     pub dial_port: Option<u16>,
@@ -174,6 +195,8 @@ struct Inner {
     changed: bool,
     status: Status,
     lounge: Option<std::sync::Arc<lounge::Lounge>>,
+    /// Commands to the running receiver.
+    commands: Option<mpsc::Sender<receiver::Event>>,
 }
 
 /// Cast state shared by the server's request handlers and the receiver thread.
@@ -190,6 +213,7 @@ impl Cast {
                 changed: true,
                 status: Status::default(),
                 lounge: None,
+                commands: None,
             }),
             wake: Condvar::new(),
         }
@@ -226,7 +250,7 @@ impl Cast {
             "server_running": true,
             "running": s.running,
             "senders": s.senders,
-            "player": s.player,
+            "in_player": s.player.is_some(),
             "video_id": s.video_id,
             "dial_port": s.dial_port,
         });
@@ -249,6 +273,23 @@ impl Cast {
         Ok(json!({ "code": code }))
     }
 
+    /// Whether the player shows the cast video with token `token`.
+    pub fn owns(&self, token: u64) -> bool {
+        self.inner.lock().unwrap().status.player == Some(token)
+    }
+
+    /// Plays the cast queue's next (`1`) or previous (`-1`) video, as the app's
+    /// buttons do. None if the receiver is not running.
+    pub fn step(&self, step: isize) -> Option<Result<Value, String>> {
+        let commands = self.inner.lock().unwrap().commands.clone()?;
+        let (tx, rx) = mpsc::channel();
+        commands.send(receiver::Event::Step(step, tx)).ok()?;
+        Some(
+            rx.recv_timeout(Duration::from_secs(90))
+                .unwrap_or_else(|_| Err("the cast receiver did not answer".into())),
+        )
+    }
+
     fn update(&self, f: impl FnOnce(&mut Status)) {
         f(&mut self.inner.lock().unwrap().status);
     }
@@ -265,6 +306,7 @@ pub fn run(cast: &Cast, host: &dyn Host) {
                 inner.changed = false;
                 inner.status = Status::default();
                 inner.lounge = None;
+                inner.commands = None;
                 inner = cast.wake.wait(inner).unwrap();
             }
             inner.changed = false;
@@ -283,7 +325,11 @@ pub fn run(cast: &Cast, host: &dyn Host) {
                     ..Status::default()
                 }
             });
-            cast.inner.lock().unwrap().lounge = None;
+            {
+                let mut inner = cast.inner.lock().unwrap();
+                inner.lounge = None;
+                inner.commands = None;
+            }
             // Retry later, or as soon as the settings change.
             let inner = cast.inner.lock().unwrap();
             if !inner.changed {

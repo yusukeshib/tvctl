@@ -12,8 +12,8 @@ use serde_json::{Value, json};
 
 use super::dial::{self, Device, Dial};
 use super::lounge::{Lounge, Message, Screen, generate_screen_id};
-use super::{Cast, Config, Host, Identity, load_identity, save_identity};
-use crate::protocol::{PlayerAction, Switch, WindowOpts};
+use super::{Cast, Config, Host, HostError, Identity, load_identity, save_identity};
+use crate::protocol::PlayerAction;
 
 /// How often the player is checked.
 const TICK: Duration = Duration::from_secs(1);
@@ -27,10 +27,13 @@ const PAUSED: i64 = 2;
 const LOADING: i64 = 3;
 const STOPPED: i64 = 4;
 
-enum Event {
+pub(super) enum Event {
     Messages(u64, Vec<Message>),
     PollEnded(u64, String),
     Paired,
+    /// `next`/`prev` from the command line on the cast video: play the queue
+    /// entry this far away and reply with the player's response.
+    Step(isize, Sender<Result<Value, String>>),
 }
 
 /// A long-poll thread for one bind session (`generation`).
@@ -136,6 +139,7 @@ pub fn run(
     {
         let mut inner = cast.inner.lock().unwrap();
         inner.lounge = Some(lounge.clone());
+        inner.commands = Some(tx.clone());
         inner.status = super::Status {
             running: true,
             dial_port: Some(dial.port()),
@@ -187,6 +191,9 @@ pub fn run(
                 retry = Some((Instant::now(), Duration::from_secs(2)));
             }
             Ok(Event::Paired) => eprintln!("cast: a sender paired through DIAL"),
+            Ok(Event::Step(step, reply)) => {
+                let _ = reply.send(player.step(step));
+            }
             Ok(_) => {}
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
@@ -194,6 +201,7 @@ pub fn run(
         player.tick();
         player.publish(cast);
     }
+    cast.inner.lock().unwrap().commands = None;
     drop(poll);
     drop(dial);
     let _ = lounge.send(&[Message::new("loungeScreenDisconnected", json!({}))]);
@@ -220,8 +228,8 @@ struct Controller<'a> {
     list_id: Option<String>,
     video_ids: Vec<String>,
     current: Option<Video>,
-    /// The tvctl player showing `current`.
-    player: Option<String>,
+    /// Token (see `Host`) of `current` in the tvctl player, while it shows it.
+    player: Option<u64>,
     status: i64,
     position: f64,
     duration: f64,
@@ -229,8 +237,6 @@ struct Controller<'a> {
     measured: Instant,
     rate: f64,
     volume: (u8, bool),
-    /// Where the last cast window was, to open the next one there.
-    window: Option<WindowOpts>,
     cpn: String,
 }
 
@@ -254,7 +260,6 @@ impl<'a> Controller<'a> {
             measured: Instant::now(),
             rate: 1.0,
             volume: (100, false),
-            window: None,
             cpn: super::lounge::random_uuid().replace('-', "")[..16].to_string(),
         }
     }
@@ -263,7 +268,7 @@ impl<'a> Controller<'a> {
         let senders = self.senders.iter().map(|s| s.name.clone()).collect();
         cast.update(|s| {
             s.senders = senders;
-            s.player = self.player.clone();
+            s.player = self.player;
             s.video_id = self.current.as_ref().map(|v| v.id.clone());
         });
     }
@@ -420,12 +425,12 @@ impl<'a> Controller<'a> {
             "getVolume" => self.send(vec![self.volume_message()]),
             "next" => {
                 if let Some(v) = self.neighbor(1) {
-                    self.play(v, 0.0);
+                    let _ = self.play(v, 0.0);
                 }
             }
             "previous" => {
                 if let Some(v) = self.neighbor(-1) {
-                    self.play(v, 0.0);
+                    let _ = self.play(v, 0.0);
                 }
             }
             "stopVideo" => self.stop(true),
@@ -521,7 +526,7 @@ impl<'a> Controller<'a> {
                     .field("currentTime")
                     .and_then(|s| s.parse::<f64>().ok())
                     .unwrap_or(0.0);
-                self.play(v, start);
+                let _ = self.play(v, start);
                 return;
             }
         } else if let Some(cur) = &mut self.current {
@@ -538,19 +543,22 @@ impl<'a> Controller<'a> {
 
     /// Runs a command on the cast player; false if there is none or it failed.
     fn command(&mut self, action: PlayerAction) -> bool {
-        let Some(id) = self.player.clone() else {
+        let Some(token) = self.player else {
             return false;
         };
-        match self.host.player(&id, action) {
+        match self.host.player(token, action) {
             Ok(v) => {
                 self.update_from(&v);
                 true
             }
+            Err(HostError::Gone) => {
+                // Closed, or replaced from the command line.
+                self.player = None;
+                self.stop(false);
+                false
+            }
             Err(e) => {
-                eprintln!("cast: player {id}: {e}");
-                if e.contains("no player") {
-                    self.player = None;
-                }
+                eprintln!("cast: player: {e}");
                 false
             }
         }
@@ -571,7 +579,7 @@ impl<'a> Controller<'a> {
         }
     }
 
-    /// Records time, duration, rate and window from a player response.
+    /// Records time, duration and rate from a player response.
     fn update_from(&mut self, v: &Value) {
         let p = &v["player"];
         if let Some(t) = num(&p["current_time"]) {
@@ -584,21 +592,12 @@ impl<'a> Controller<'a> {
         if let Some(r) = num(&p["playback_rate"]).filter(|r| *r > 0.0) {
             self.rate = r;
         }
-        let w = &v["window"];
-        if w.is_object() {
-            let fullscreen = w["fullscreen"] == true;
-            self.window = Some(WindowOpts {
-                size: num(&w["size"]["width"]).zip(num(&w["size"]["height"])),
-                position: num(&w["position"]["x"]).zip(num(&w["position"]["y"])),
-                fullscreen: fullscreen.then_some(Switch::On),
-                ..WindowOpts::default()
-            });
-        }
     }
 
+    /// Closes the player window if it still shows the cast video.
     fn close_player(&mut self) {
-        if let Some(id) = self.player.take() {
-            let _ = self.host.close(&id);
+        if let Some(token) = self.player.take() {
+            let _ = self.host.close(token);
         }
     }
 
@@ -611,10 +610,20 @@ impl<'a> Controller<'a> {
         self.send(vec![self.on_state_change(), self.now_playing()]);
     }
 
-    /// Plays `video` in a new player window where the last one was.
-    fn play(&mut self, video: Video, start: f64) {
+    /// `next`/`prev` from the command line: like the app's buttons.
+    fn step(&mut self, step: isize) -> Result<Value, String> {
+        let what = if step > 0 { "next" } else { "previous" };
+        let video = self
+            .neighbor(step)
+            .ok_or_else(|| format!("no {what} video in the cast queue"))?;
+        self.play(video, 0.0)
+    }
+
+    /// Plays `video` in the player (replacing what it shows; the window keeps
+    /// its place) and returns the player's response.
+    fn play(&mut self, video: Video, start: f64) -> Result<Value, String> {
         eprintln!("cast: play {} at {start}", video.id);
-        self.close_player();
+        self.player = None;
         self.current = Some(video.clone());
         self.status = LOADING;
         self.position = start;
@@ -622,39 +631,40 @@ impl<'a> Controller<'a> {
         self.measured = Instant::now();
         self.send(vec![self.on_state_change(), self.now_playing(), self.nav()]);
         let url = format!("https://www.youtube.com/watch?v={}", video.id);
-        let window = self.window.clone().unwrap_or_default();
-        match self.host.open(&url, start, window) {
-            Ok(v) => {
-                self.player = v["id"].as_str().map(String::from);
+        let result = match self.host.open(&url, start) {
+            Ok((token, v)) => {
+                self.player = Some(token);
                 self.update_from(&v);
                 if self.volume != (100, false) {
                     self.apply_volume();
                 }
                 self.status = PLAYING;
+                Ok(v)
             }
             Err(e) => {
                 eprintln!("cast: opening {url}: {e}");
                 self.status = STOPPED;
+                Err(format!("opening {url}: {e}"))
             }
-        }
+        };
         self.send(vec![self.on_state_change(), self.now_playing(), self.nav()]);
+        result
     }
 
     /// Follows the player: state, position and its end.
     fn tick(&mut self) {
-        let Some(id) = self.player.clone() else {
+        let Some(token) = self.player else {
             return;
         };
-        let v = match self.host.player(&id, PlayerAction::Status) {
+        let v = match self.host.player(token, PlayerAction::Status) {
             Ok(v) => v,
-            Err(e) => {
-                if e.contains("no player") {
-                    // The window was closed.
-                    self.player = None;
-                    self.stop(false);
-                }
+            Err(HostError::Gone) => {
+                // The window was closed, or something else was opened in it.
+                self.player = None;
+                self.stop(false);
                 return;
             }
+            Err(_) => return,
         };
         let expected = self.now_position();
         self.update_from(&v);
@@ -664,7 +674,9 @@ impl<'a> Controller<'a> {
             Some("paused") => PAUSED,
             Some("ended") => {
                 match self.neighbor(1) {
-                    Some(next) => self.play(next, 0.0),
+                    Some(next) => {
+                        let _ = self.play(next, 0.0);
+                    }
                     None => {
                         if self.status != STOPPED {
                             self.stop(false);
@@ -696,39 +708,68 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    /// The one player window: `open` replaces what it shows (new token).
     #[derive(Default)]
     struct FakeHost {
         calls: Mutex<Vec<String>>,
         state: Mutex<String>,
+        /// Token of what the player shows; None when the window is closed.
+        showing: Mutex<Option<u64>>,
+        next: Mutex<u64>,
+    }
+
+    impl FakeHost {
+        /// Something else is opened in the player (e.g. from the command line).
+        fn replace(&self) {
+            let mut next = self.next.lock().unwrap();
+            *next += 1;
+            *self.showing.lock().unwrap() = Some(*next);
+        }
+
+        fn check(&self, token: u64) -> Result<(), HostError> {
+            if *self.showing.lock().unwrap() == Some(token) {
+                Ok(())
+            } else {
+                Err(HostError::Gone)
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
     }
 
     impl Host for FakeHost {
-        fn open(&self, url: &str, start: f64, window: WindowOpts) -> Result<Value, String> {
+        fn open(&self, url: &str, start: f64) -> Result<(u64, Value), HostError> {
             self.calls
                 .lock()
                 .unwrap()
-                .push(format!("open {url} {start} {:?}", window.position));
+                .push(format!("open {url} {start}"));
+            self.replace();
             *self.state.lock().unwrap() = "playing".into();
-            Ok(json!({
-                "id": "7",
-                "player": { "state": "playing", "current_time": start, "duration": 100, "volume": 100, "muted": false },
-                "window": { "position": {"x": 10, "y": 20}, "size": {"width": 640, "height": 360}, "fullscreen": false },
-            }))
+            let token = *self.next.lock().unwrap();
+            Ok((
+                token,
+                json!({
+                    "player": { "state": "playing", "current_time": start, "duration": 100, "volume": 100, "muted": false },
+                }),
+            ))
         }
-        fn player(&self, id: &str, action: PlayerAction) -> Result<Value, String> {
+        fn player(&self, token: u64, action: PlayerAction) -> Result<Value, HostError> {
+            self.check(token)?;
             let a = serde_json::to_value(&action).unwrap();
             if a["action"] != "status" {
-                self.calls.lock().unwrap().push(format!("{id} {a}"));
+                self.calls.lock().unwrap().push(format!("{token} {a}"));
             }
             Ok(json!({
-                "id": id,
                 "player": { "state": *self.state.lock().unwrap(), "current_time": 5, "duration": 100, "volume": 100, "muted": false },
-                "window": { "position": {"x": 10, "y": 20}, "size": {"width": 640, "height": 360}, "fullscreen": false },
             }))
         }
-        fn close(&self, id: &str) -> Result<Value, String> {
-            self.calls.lock().unwrap().push(format!("close {id}"));
-            Ok(json!({}))
+        fn close(&self, token: u64) -> Result<(), HostError> {
+            self.check(token)?;
+            self.calls.lock().unwrap().push(format!("close {token}"));
+            *self.showing.lock().unwrap() = None;
+            Ok(())
         }
     }
 
@@ -747,6 +788,13 @@ mod tests {
         Message::new(name, payload)
     }
 
+    fn video(id: &str) -> Video {
+        Video {
+            id: id.into(),
+            index: None,
+        }
+    }
+
     #[test]
     fn playlist_play_controls_and_queue() {
         let host = FakeHost::default();
@@ -755,7 +803,7 @@ mod tests {
             "setPlaylist",
             json!({"listId": "RQ1", "videoId": "b", "currentIndex": "1", "currentTime": "12", "videoIds": "a,b,c"}),
         )]);
-        assert_eq!(c.player.as_deref(), Some("7"));
+        assert_eq!(c.player, Some(1));
         assert_eq!(c.status, PLAYING);
         assert_eq!(c.neighbor(1).unwrap().id, "c");
         assert_eq!(c.neighbor(-1).unwrap().id, "a");
@@ -775,18 +823,17 @@ mod tests {
         *host.state.lock().unwrap() = "ended".into();
         c.tick();
         assert_eq!(c.status, STOPPED);
-        assert_eq!(c.player.as_deref(), Some("7"));
-        let calls = host.calls.lock().unwrap().clone();
+        assert_eq!(c.player, Some(2));
+        // The next video replaces the previous one in the same window (no close).
         assert_eq!(
-            calls,
+            host.calls(),
             vec![
-                "open https://www.youtube.com/watch?v=b 12 None".to_string(),
-                r#"7 {"action":"pause"}"#.into(),
-                r#"7 {"action":"seek","relative":false,"seconds":30.0}"#.into(),
-                r#"7 {"action":"volume","level":40,"muted":false}"#.into(),
-                "close 7".into(),
-                "open https://www.youtube.com/watch?v=c 0 Some((10.0, 20.0))".into(),
-                r#"7 {"action":"volume","level":40,"muted":false}"#.into(),
+                "open https://www.youtube.com/watch?v=b 12".to_string(),
+                r#"1 {"action":"pause"}"#.into(),
+                r#"1 {"action":"seek","relative":false,"seconds":30.0}"#.into(),
+                r#"1 {"action":"volume","level":40,"muted":false}"#.into(),
+                "open https://www.youtube.com/watch?v=c 0".into(),
+                r#"2 {"action":"volume","level":40,"muted":false}"#.into(),
             ]
         );
     }
@@ -812,49 +859,62 @@ mod tests {
         assert!(c.senders.is_empty());
         assert!(c.player.is_none());
         assert_eq!(c.status, STOPPED);
-        assert!(
-            host.calls
-                .lock()
-                .unwrap()
-                .last()
-                .unwrap()
-                .starts_with("close")
-        );
+        assert_eq!(host.calls().last().unwrap(), "close 2");
     }
 
     #[test]
     fn closed_window_stops() {
-        struct Gone;
-        impl Host for Gone {
-            fn open(&self, _: &str, _: f64, _: WindowOpts) -> Result<Value, String> {
-                Ok(json!({"id": "1", "player": {}}))
-            }
-            fn player(&self, _: &str, _: PlayerAction) -> Result<Value, String> {
-                Err("no player with id \"1\"".into())
-            }
-            fn close(&self, _: &str) -> Result<Value, String> {
-                Ok(json!({}))
-            }
-        }
-        let host = Gone;
-        let mut c = Controller::new(
-            &host,
-            Arc::new(Lounge::new(Screen {
-                screen_id: String::new(),
-                device_id: String::new(),
-                name: String::new(),
-            })),
-        );
-        c.play(
-            Video {
-                id: "x".into(),
-                index: None,
-            },
-            0.0,
-        );
-        assert_eq!(c.player.as_deref(), Some("1"));
+        let host = FakeHost::default();
+        let mut c = controller(&host);
+        c.play(video("x"), 0.0).unwrap();
+        assert_eq!(c.player, Some(1));
+        *host.showing.lock().unwrap() = None;
         c.tick();
         assert!(c.player.is_none());
         assert_eq!(c.status, STOPPED);
+    }
+
+    #[test]
+    fn replaced_content_stops_and_is_left_alone() {
+        let host = FakeHost::default();
+        let mut c = controller(&host);
+        c.play(video("x"), 0.0).unwrap();
+        // Something else opened in the player from the command line.
+        host.replace();
+        c.tick();
+        assert!(c.player.is_none());
+        assert_eq!(c.status, STOPPED);
+        // Commands and Disconnect from the app do not touch the other content.
+        c.handle(vec![
+            msg("pause", Value::Null),
+            msg("stopVideo", Value::Null),
+        ]);
+        assert_eq!(
+            host.calls(),
+            vec!["open https://www.youtube.com/watch?v=x 0"]
+        );
+        assert_eq!(*host.showing.lock().unwrap(), Some(2));
+    }
+
+    #[test]
+    fn command_line_steps_through_the_queue() {
+        let host = FakeHost::default();
+        let mut c = controller(&host);
+        c.handle(vec![msg(
+            "setPlaylist",
+            json!({"listId": "RQ1", "videoId": "b", "currentIndex": "1", "videoIds": "a,b,c"}),
+        )]);
+        let v = c.step(1).unwrap();
+        assert_eq!(v["player"]["state"], "playing");
+        assert_eq!(c.current.as_ref().unwrap().id, "c");
+        assert_eq!(c.player, Some(2));
+        let e = c.step(1).unwrap_err();
+        assert_eq!(e, "no next video in the cast queue");
+        c.step(-1).unwrap();
+        assert_eq!(c.current.as_ref().unwrap().id, "b");
+        assert_eq!(
+            host.calls().last().unwrap(),
+            "open https://www.youtube.com/watch?v=b 0"
+        );
     }
 }

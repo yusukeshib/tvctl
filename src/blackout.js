@@ -19,15 +19,6 @@ if (window.top === window && !window.__tvctlBlackout) window.__tvctlBlackout = (
   let pointer = null;
   let polling = false;
 
-  // Tells a WebView host (window.ipc) about changes; Chrome hosts read `shown`.
-  const notify = () => {
-    try {
-      if (window.ipc && window.ipc.postMessage) {
-        window.ipc.postMessage(JSON.stringify({ type: "blackout", shown }));
-      }
-    } catch (_) {}
-  };
-
   function overlay() {
     if (el) return el;
     el = document.createElement("div");
@@ -67,7 +58,7 @@ if (window.top === window && !window.__tvctlBlackout) window.__tvctlBlackout = (
       try { if (o.matches(":popover-open")) o.hidePopover(); o.showPopover(); } catch (_) {}
     }
     pointer = null;
-    if (!shown) { shown = true; notify(); }
+    if (!shown) shown = true;
   }
 
   function hide() {
@@ -75,7 +66,7 @@ if (window.top === window && !window.__tvctlBlackout) window.__tvctlBlackout = (
       if (el.hidePopover) { try { el.hidePopover(); } catch (_) {} }
       el.style.setProperty("display", "none", "important");
     }
-    if (shown) { shown = false; notify(); }
+    if (shown) shown = false;
   }
 
   // Activity: remove the blackout and restart the wait.
