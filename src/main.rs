@@ -213,6 +213,9 @@ enum Cmd {
         /// Only results of this kind, e.g. track or artist (see `tvctl plugins`).
         #[arg(long)]
         kind: Option<String>,
+        /// Another site of the service, e.g. jp for amazon.co.jp (see `tvctl plugins`).
+        #[arg(long)]
+        site: Option<String>,
         /// Maximum number of results.
         #[arg(long, default_value_t = 10)]
         limit: usize,
@@ -494,11 +497,13 @@ fn plan(cmd: Cmd) -> Result<Plan> {
             service,
             query,
             kind,
+            site,
             limit,
         } => Request::Search {
             service,
             query: query.join(" "),
             kind,
+            site,
             limit: limit.max(1),
         },
         Cmd::Auth { action } => match action {

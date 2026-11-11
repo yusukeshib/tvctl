@@ -771,6 +771,7 @@ impl Backend {
         plugin: &Plugin,
         query: &str,
         kind: Option<&str>,
+        site: Option<&str>,
         limit: usize,
     ) -> Result<Value> {
         let _busy = Busy::new(&self.shared);
@@ -782,7 +783,7 @@ impl Backend {
         let script = plugin
             .file(crate::plugin::SEARCH_SCRIPT)
             .context("plugin has no search.js")?;
-        let url = search.page_url(query, kind)?;
+        let url = search.page_url(query, kind, site)?;
         let inst = self.instance()?;
         // A hidden target has no UI at all; Chrome allows it only in some debugging
         // setups, so fall back to a minimized background window.
@@ -838,13 +839,23 @@ impl Backend {
                 Some(&tab.session_id),
                 Duration::from_secs(5),
             );
-            navigate(&inst, &tab, &url)?;
-            wait_loaded(&inst, &tab)?;
             let expr = format!(
                 "(async (limit, kind) => {{\n{script}\n}})({limit}, {})",
                 json!(kind)
             );
-            evaluate(&inst, &tab, &expr, Duration::from_secs(30))
+            // A script may ask to load another page and run again (e.g. after
+            // picking a profile), like the adapter's `open`.
+            let mut next = url.clone();
+            for _ in 0..3 {
+                navigate(&inst, &tab, &next)?;
+                wait_loaded(&inst, &tab)?;
+                let result = evaluate(&inst, &tab, &expr, Duration::from_secs(45))?;
+                match result.get("navigate").and_then(Value::as_str) {
+                    Some(u) => next = u.to_string(),
+                    None => return Ok(result),
+                }
+            }
+            bail!("search page kept redirecting")
         })();
         let _ = inst.cdp.call(
             "Target.closeTarget",

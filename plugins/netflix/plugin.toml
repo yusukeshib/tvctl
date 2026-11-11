@@ -21,3 +21,7 @@ login_url = "https://www.netflix.com/login"
 cookie_url = "https://www.netflix.com"
 # NetflixId/SecureNetflixId are set for anonymous visitors too; these are not.
 logged_in_cookies = ["nap", "profilesNewSession"]
+
+[search]
+url = "https://www.netflix.com/search?q={query}"
+kinds = ["title"]

@@ -23,3 +23,7 @@ login_url = "https://sso.crunchyroll.com/login"
 cookie_url = "https://www.crunchyroll.com"
 # The refresh-token cookie is set by a login only (not for anonymous visitors).
 logged_in_cookies = ["etp_rt"]
+
+[search]
+url = "https://www.crunchyroll.com/search?q={query}"
+kinds = ["series", "video"]

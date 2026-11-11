@@ -58,14 +58,27 @@ pub struct Search {
     /// Search pages limited to one kind (`tvctl search --kind`), by kind.
     #[serde(default)]
     pub kind_urls: BTreeMap<String, String>,
+    /// Search pages of other sites of the service (`tvctl search --site`, e.g.
+    /// a regional store), by the site names of `[auth]`.
+    #[serde(default)]
+    pub site_urls: BTreeMap<String, String>,
 }
 
 impl Search {
     /// The search page for `query`, of one `kind` when given.
-    pub fn page_url(&self, query: &str, kind: Option<&str>) -> Result<String> {
-        let template = match kind {
-            None => &self.url,
-            Some(k) => self.kind_urls.get(k).ok_or_else(|| {
+    pub fn page_url(&self, query: &str, kind: Option<&str>, site: Option<&str>) -> Result<String> {
+        let template = match (kind, site) {
+            (Some(_), Some(_)) => bail!("--kind and --site cannot be combined"),
+            (None, None) => &self.url,
+            (None, Some(s)) => self.site_urls.get(s).ok_or_else(|| {
+                let known: Vec<&str> = self.site_urls.keys().map(String::as_str).collect();
+                if known.is_empty() {
+                    anyhow::anyhow!("this service has no --site")
+                } else {
+                    anyhow::anyhow!("unknown site {s:?} (sites: {})", known.join(", "))
+                }
+            })?,
+            (Some(k), None) => self.kind_urls.get(k).ok_or_else(|| {
                 let known: Vec<&str> = self.kind_urls.keys().map(String::as_str).collect();
                 if known.is_empty() {
                     anyhow::anyhow!("this service has no --kind")
@@ -232,6 +245,7 @@ impl Plugin {
                 "command": format!("tvctl search {} <query>", m.name),
                 "kinds": s.kinds,
                 "kind_filter": s.kind_urls.keys().collect::<Vec<_>>(),
+                "sites": s.site_urls.keys().collect::<Vec<_>>(),
             })),
             "notes": m.notes,
             "source": self.source,
@@ -292,6 +306,7 @@ impl Plugin {
         if let Some(s) = &manifest.search {
             if std::iter::once(&s.url)
                 .chain(s.kind_urls.values())
+                .chain(s.site_urls.values())
                 .any(|u| !u.contains("{query}"))
             {
                 bail!("plugin {}: a search url has no {{query}}", manifest.name);
@@ -465,14 +480,31 @@ mod tests {
         let r = Registry::load().unwrap();
         let spotify = r.get("spotify").unwrap().manifest.search.as_ref().unwrap();
         assert_eq!(
-            spotify.page_url("First Love", None).unwrap(),
+            spotify.page_url("First Love", None, None).unwrap(),
             "https://open.spotify.com/search/First%20Love"
         );
         assert_eq!(
-            spotify.page_url("a&b", Some("track")).unwrap(),
+            spotify.page_url("a&b", Some("track"), None).unwrap(),
             "https://open.spotify.com/search/a%26b/tracks"
         );
-        assert!(spotify.page_url("x", Some("podcast")).is_err());
+        assert!(spotify.page_url("x", Some("podcast"), None).is_err());
+        let prime = r
+            .get("primevideo")
+            .unwrap()
+            .manifest
+            .search
+            .as_ref()
+            .unwrap();
+        assert!(
+            prime
+                .page_url("x", None, Some("jp"))
+                .unwrap()
+                .starts_with("https://www.amazon.co.jp/s?k=x")
+        );
+        assert!(prime.page_url("x", None, Some("uk")).is_err());
+        for p in ["netflix", "crunchyroll", "primevideo"] {
+            assert!(r.get(p).unwrap().file(SEARCH_SCRIPT).is_some(), "{p}");
+        }
         let yt = r.get("youtube").unwrap();
         assert!(yt.file(SEARCH_SCRIPT).is_some());
         assert_eq!(
@@ -480,7 +512,7 @@ mod tests {
                 .search
                 .as_ref()
                 .unwrap()
-                .page_url("日本", None)
+                .page_url("日本", None, None)
                 .unwrap(),
             "https://www.youtube.com/results?search_query=%E6%97%A5%E6%9C%AC"
         );
@@ -489,7 +521,7 @@ mod tests {
                 .search
                 .as_ref()
                 .unwrap()
-                .page_url("x", Some("video"))
+                .page_url("x", Some("video"), None)
                 .is_err()
         );
     }

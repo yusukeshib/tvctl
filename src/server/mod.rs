@@ -190,6 +190,7 @@ impl Router {
                 service,
                 query,
                 kind,
+                site,
                 limit,
             } => {
                 let plugin = self
@@ -197,7 +198,7 @@ impl Router {
                     .get(&service)
                     .ok_or_else(|| format!("no plugin named {service:?}"))?;
                 self.chrome
-                    .search(plugin, &query, kind.as_deref(), limit)
+                    .search(plugin, &query, kind.as_deref(), site.as_deref(), limit)
                     .map_err(err)
             }
         }

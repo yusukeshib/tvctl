@@ -84,6 +84,9 @@ tvctl close
 
 tvctl search youtube 日本 ニュース ライブ          # => {"results": [{"kind", "title", "url", ...}]}
 tvctl search spotify 宇多田ヒカル --kind track --limit 5
+tvctl search netflix stranger things
+tvctl search primevideo 鬼滅の刃 --site jp     # amazon.co.jp; amazon.com without --site
+tvctl search crunchyroll frieren
 
 tvctl auth login youtube             # sign in once in tvctl's Chrome profile
 tvctl auth login spotify
@@ -109,7 +112,8 @@ next window opens where the last one was.
 
 `search` runs in a background tab of tvctl's Chrome (with its logins) and does
 not touch the player; open a result with `tvctl open <url>`. `tvctl plugins`
-shows which services have search and their `--kind` values.
+shows which services have search and their `--kind` and `--site` values.
+Netflix search picks the first non-Kids profile when Netflix asks who is watching.
 
 Player, `search`, `auth` and `cast code` commands need the background server. Start it
 with `tvctl server up`; it keeps running, with or without a player, until

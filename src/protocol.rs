@@ -64,6 +64,8 @@ pub enum Request {
         query: String,
         #[serde(default)]
         kind: Option<String>,
+        #[serde(default)]
+        site: Option<String>,
         limit: usize,
     },
 }

@@ -63,7 +63,7 @@ Quote URLs (`'...'`): `?` and `&` break in shells such as zsh.
 
 | Goal | Command |
 |---|---|
-| Find a URL | `tvctl search youtube <query>`, `tvctl search spotify <query> --kind track` (results with `url`s; services with search and their kinds: `tvctl plugins`) |
+| Find a URL | `tvctl search youtube <query>`, `tvctl search spotify <query> --kind track`, `tvctl search netflix <query>`, `tvctl search primevideo <query> --site jp`, `tvctl search crunchyroll <query>` (results with `url`s; kinds and sites: `tvctl plugins`) |
 | Play / pause / toggle | `tvctl play`, `tvctl pause`, `tvctl toggle` |
 | Next / previous item | `tvctl next`, `tvctl prev` |
 | Seek | `tvctl seek 1:30` (absolute), `tvctl seek +30` / `-10` (relative) |
