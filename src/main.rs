@@ -84,8 +84,9 @@ enum Cmd {
     /// Play a URL in the player window; prints the player's status.
     ///
     /// There is one player window: it opens if there is none, otherwise the URL
-    /// replaces what it shows (the window keeps its place, size and fullscreen
-    /// unless window options are given). The plugin is chosen by the URL's
+    /// replaces what it shows. The window goes fullscreen unless `--windowed`,
+    /// `--size`, `--position` or `--layout` is given (leaving fullscreen returns
+    /// it to its place and size). The plugin is chosen by the URL's
     /// domain (see `tvctl plugins`). Fails unless the background server is
     /// running (`tvctl server up`).
     Open {
@@ -107,9 +108,14 @@ enum Cmd {
         subtitles: Option<String>,
         #[command(flatten)]
         window: GeometryArgs,
-        /// Fullscreen.
-        #[arg(long)]
+        /// Fullscreen after applying --size, --position or --layout (the window
+        /// returns there when leaving fullscreen). Without them, fullscreen is
+        /// the default.
+        #[arg(long, conflicts_with = "windowed")]
         fullscreen: bool,
+        /// Show in a window instead of fullscreen (leaves fullscreen if needed).
+        #[arg(long)]
+        windowed: bool,
     },
     /// Show the player's playback and window status.
     Status,
@@ -442,19 +448,30 @@ fn plan(cmd: Cmd) -> Result<Plan> {
             subtitles,
             window,
             fullscreen,
+            windowed,
         } => {
             let start = start.map(|s| timeparse::parse_duration(&s)).transpose()?;
+            let mut window = WindowOpts {
+                size: window.size,
+                position: window.position,
+                layout: window.layout,
+                fullscreen: None,
+            };
+            // Fullscreen by default; window options or --windowed show it in
+            // a window (window options already leave fullscreen).
+            window.fullscreen = if windowed {
+                Some(Switch::Off)
+            } else if fullscreen || !window.changes_geometry() {
+                Some(Switch::On)
+            } else {
+                None
+            };
             Request::Open {
                 url,
                 start,
                 paused,
                 subtitles,
-                window: WindowOpts {
-                    size: window.size,
-                    position: window.position,
-                    layout: window.layout,
-                    fullscreen: fullscreen.then_some(Switch::On),
-                },
+                window,
             }
         }
         Cmd::Auth { action } => match action {
@@ -700,9 +717,29 @@ mod tests {
             json!({
                 "cmd": "open", "url": "https://youtu.be/x", "start": null,
                 "paused": false, "subtitles": null,
-                "window": { "size": null, "position": null, "layout": null, "fullscreen": null },
+                "window": { "size": null, "position": null, "layout": null, "fullscreen": "on" },
             })
         );
+        let window = |args: &[&str]| {
+            let mut all = vec!["open", "u"];
+            all.extend_from_slice(args);
+            req(&all)["window"].clone()
+        };
+        assert_eq!(window(&["--fullscreen"])["fullscreen"], "on");
+        assert_eq!(window(&["--windowed"])["fullscreen"], "off");
+        // Window options show it in a window unless --fullscreen is given.
+        for opts in [
+            &["--size", "640x360"][..],
+            &["--position", "10,20"],
+            &["--layout", "left"],
+        ] {
+            assert_eq!(window(opts)["fullscreen"], Value::Null, "{opts:?}");
+        }
+        assert_eq!(
+            window(&["--layout", "left", "--windowed"])["fullscreen"],
+            "off"
+        );
+        rejects(&["open", "u", "--fullscreen", "--windowed"]);
         assert_eq!(
             req(&[
                 "open",
