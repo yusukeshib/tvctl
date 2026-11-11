@@ -352,8 +352,8 @@ fn playback() {
 fn window() {
     let env = Env::new();
     env.up();
-    let v = open(&env, "/video/1", &[]);
-    // Default: 960x540 video area, centered.
+    let v = open(&env, "/video/1", &["--windowed"]);
+    // Default window: 960x540 video area, centered.
     assert_eq!(f(&v["window"]["size"]["width"]), 960.0);
     assert_eq!(f(&v["window"]["size"]["height"]), 540.0);
     let (x, y, w, h) = work_area(&v);
@@ -430,10 +430,21 @@ fn window() {
     // open with window options moves the existing window
     let v = open(&env, "/video/2", &["--layout", "top-right"]);
     assert_frame(&v, (x + hw, y, hw, hh), "open --layout top-right");
-    open(&env, "/video/3", &["--fullscreen"]);
+    open(&env, "/video/3", &["--layout", "left", "--fullscreen"]);
     eventually("open --fullscreen", Duration::from_secs(5), || {
         fullscreen() == true
     });
+    std::thread::sleep(Duration::from_secs(1));
+    // Leaving fullscreen returns to the place given with --fullscreen.
+    env.ok(&["fullscreen", "off"]);
+    eventually("fullscreen off", Duration::from_secs(5), || {
+        fullscreen() == false
+    });
+    assert_frame(
+        &env.ok(&["status"]),
+        (x, y, hw, h),
+        "left after open --fullscreen",
+    );
     env.ok(&["close"]);
 }
 
@@ -452,7 +463,7 @@ fn open_replaces_content_in_the_same_window() {
     env.ok(&["seek", "30"]);
 
     // Same window (one more history entry), same place and size, new content.
-    let b = open(&env, "/video/2", &[]);
+    let b = open(&env, "/video/2", &["--windowed"]);
     assert_eq!(history_length(&env), 2);
     assert_eq!(frame(&b), frame(&a));
     assert_eq!(player(&b, "opened")["url"], env.url("/video/2"));
@@ -461,12 +472,12 @@ fn open_replaces_content_in_the_same_window() {
 
     // The same URL again reloads it (the adapter opens it afresh).
     env.ok(&["seek", "40"]);
-    let again = open(&env, "/video/2", &[]);
+    let again = open(&env, "/video/2", &["--windowed"]);
     assert_eq!(player(&again, "current_time"), 0.0);
 
     // Another plugin in the same window: its declarations apply.
     let limited = env.url("/v").replace("127.0.0.1", "localhost");
-    let c = env.ok(&["open", &limited]);
+    let c = env.ok(&["open", &limited, "--windowed"]);
     assert_eq!(c["service"], "limited");
     assert_eq!(frame(&c), frame(&a));
     assert!(
@@ -480,23 +491,25 @@ fn open_replaces_content_in_the_same_window() {
             .is_ok_and(|v| v["player"]["title"] == "Fake video")
     });
 
-    // Fullscreen is kept across opens.
-    env.ok(&["fullscreen", "on"]);
-    eventually("fullscreen on", Duration::from_secs(5), || {
+    // `open` goes fullscreen by default; `--windowed` leaves it, back where
+    // the window was.
+    let windowed = frame(&c);
+    open(&env, "/video/3", &[]);
+    eventually("open goes fullscreen", Duration::from_secs(5), || {
         env.ok(&["status"])["window"]["fullscreen"] == true
     });
-    open(&env, "/video/3", &[]);
-    assert_eq!(env.ok(&["status"])["window"]["fullscreen"], true);
-    env.ok(&["fullscreen", "off"]);
-    eventually("fullscreen off", Duration::from_secs(5), || {
+    std::thread::sleep(Duration::from_secs(1));
+    open(&env, "/video/3", &["--windowed"]);
+    eventually("open --windowed", Duration::from_secs(5), || {
         env.ok(&["status"])["window"]["fullscreen"] == false
     });
     std::thread::sleep(Duration::from_secs(1));
+    assert_frame(&env.ok(&["status"]), windowed, "windowed after fullscreen");
 
     // After `close`, the next window opens where the last one was.
     let placed = env.ok(&["window", "--size", "500x300", "--position", "50,70"]);
     env.ok(&["close"]);
-    let d = open(&env, "/video/4", &[]);
+    let d = open(&env, "/video/4", &["--windowed"]);
     assert_eq!(history_length(&env), 1);
     assert_frame(&d, frame(&placed), "reopened where the last window was");
     // Window options win over the remembered place.

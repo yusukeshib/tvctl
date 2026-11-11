@@ -111,7 +111,7 @@ fn youtube_chrome() {
 fn youtube_chrome_audio_tracks_and_fill() {
     let env = Env::with_profile();
     env.up();
-    env.ok(&["open", TED]);
+    env.ok(&["open", TED, "--windowed"]);
     wait_playing_main_video(&env);
     let a = env.ok(&["audio", "list"]);
     assert!(

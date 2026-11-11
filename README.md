@@ -58,6 +58,8 @@ cloud sandboxes cannot show anything on your screen.
 
 ```sh
 tvctl server up                      # start the background server once
+tvctl open https://youtu.be/jNQXAC9IVRw   # fullscreen by default
+tvctl open https://youtu.be/jNQXAC9IVRw --windowed
 tvctl open https://youtu.be/jNQXAC9IVRw --layout bottom-right --size 640x360
 # => {"service": "youtube", "player": {...}, "window": {...}}
 
@@ -96,8 +98,9 @@ tvctl duck status / tvctl duck apps / tvctl duck off
 ```
 
 There is one player window. `open` opens it if there is none; otherwise the URL
-replaces what it shows, and the window keeps its place, size and fullscreen
-unless window options are given. Player commands take no id: they act on that
+replaces what it shows. `open` makes the window fullscreen unless `--windowed`,
+`--size`, `--position` or `--layout` is given; leaving fullscreen returns it to
+its place and size. Player commands take no id: they act on that
 window. With no window open they fail (`no player is open`). After `close`, the
 next window opens where the last one was.
 

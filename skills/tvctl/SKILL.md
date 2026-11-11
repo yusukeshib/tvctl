@@ -45,14 +45,15 @@ the supported ones.
 ## 3. Basic use
 
 ```sh
-tvctl open '<URL>'          # plays it in the player window; prints {"service", "player", "window"}
+tvctl open '<URL>'          # plays it fullscreen; prints {"service", "player", "window"}
 tvctl status                # state, title, current_time/duration (seconds), window
 tvctl close                 # closes the window
 ```
 
 There is one player window. `open` opens it if there is none; otherwise the URL
-replaces what it shows (the window keeps its place, size and fullscreen unless
-window options are given). Player commands take no id; they act on that window.
+replaces what it shows. `open` makes the window fullscreen unless `--windowed`,
+`--size`, `--position` or `--layout` is given (leaving fullscreen returns it to
+its place and size). Player commands take no id; they act on that window.
 `open`, player,
 `auth` and `cast code` commands need the background server; nothing starts it
 implicitly. If one fails with `server is not running`, run `tvctl server up` and
