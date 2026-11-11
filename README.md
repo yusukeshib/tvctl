@@ -82,6 +82,9 @@ tvctl fullscreen                     # toggle (or on/off)
 tvctl screenshot shot.png            # PNG of the player window, even when covered
 tvctl close
 
+tvctl search youtube 日本 ニュース ライブ          # => {"results": [{"kind", "title", "url", ...}]}
+tvctl search spotify 宇多田ヒカル --kind track --limit 5
+
 tvctl auth login youtube             # sign in once in tvctl's Chrome profile
 tvctl auth login spotify
 tvctl auth login primevideo             # amazon.com (US)
@@ -104,7 +107,11 @@ its place and size. Player commands take no id: they act on that
 window. With no window open they fail (`no player is open`). After `close`, the
 next window opens where the last one was.
 
-Player, `auth` and `cast code` commands need the background server. Start it
+`search` runs in a background tab of tvctl's Chrome (with its logins) and does
+not touch the player; open a result with `tvctl open <url>`. `tvctl plugins`
+shows which services have search and their `--kind` values.
+
+Player, `search`, `auth` and `cast code` commands need the background server. Start it
 with `tvctl server up`; it keeps running, with or without a player, until
 `tvctl server down`, which closes the player and quits tvctl's Chrome.
 tvctl's Chrome also quits (and leaves the Dock) a minute after the player

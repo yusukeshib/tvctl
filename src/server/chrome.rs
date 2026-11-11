@@ -764,6 +764,99 @@ impl Backend {
         Ok(out)
     }
 
+    /// Searches a service: loads its search page in a hidden tab (no window, the
+    /// player is untouched), runs the plugin's `search.js`, and closes the tab.
+    pub fn search(
+        &self,
+        plugin: &Plugin,
+        query: &str,
+        kind: Option<&str>,
+        limit: usize,
+    ) -> Result<Value> {
+        let _busy = Busy::new(&self.shared);
+        let search = plugin
+            .manifest
+            .search
+            .as_ref()
+            .ok_or_else(|| anyhow!("{} has no search", plugin.name()))?;
+        let script = plugin
+            .file(crate::plugin::SEARCH_SCRIPT)
+            .context("plugin has no search.js")?;
+        let url = search.page_url(query, kind)?;
+        let inst = self.instance()?;
+        // A hidden target has no UI at all; Chrome allows it only in some debugging
+        // setups, so fall back to a minimized background window.
+        let created = inst
+            .cdp
+            .call(
+                "Target.createTarget",
+                json!({ "url": "about:blank", "hidden": true }),
+                None,
+                Duration::from_secs(10),
+            )
+            .or_else(|_| {
+                inst.cdp.call(
+                    "Target.createTarget",
+                    json!({
+                        "url": "about:blank",
+                        "newWindow": true,
+                        "background": true,
+                        "windowState": "minimized",
+                    }),
+                    None,
+                    Duration::from_secs(10),
+                )
+            })?;
+        let target_id = created["targetId"]
+            .as_str()
+            .context("no target id")?
+            .to_string();
+        let result = (|| {
+            let attached = inst.cdp.call(
+                "Target.attachToTarget",
+                json!({ "targetId": target_id, "flatten": true }),
+                None,
+                Duration::from_secs(10),
+            )?;
+            let tab = ChromePlayer {
+                target_id: target_id.clone(),
+                session_id: attached["sessionId"]
+                    .as_str()
+                    .context("no session id")?
+                    .to_string(),
+                content: Mutex::new(Content {
+                    plugin: Arc::new(plugin.clone()),
+                    adapter_script: String::new(),
+                    generation: 0,
+                    last_status: Value::Null,
+                }),
+            };
+            // A hidden tab is never visible: keep timers and rendering running.
+            let _ = inst.cdp.call(
+                "Emulation.setFocusEmulationEnabled",
+                json!({ "enabled": true }),
+                Some(&tab.session_id),
+                Duration::from_secs(5),
+            );
+            navigate(&inst, &tab, &url)?;
+            wait_loaded(&inst, &tab)?;
+            let expr = format!(
+                "(async (limit, kind) => {{\n{script}\n}})({limit}, {})",
+                json!(kind)
+            );
+            evaluate(&inst, &tab, &expr, Duration::from_secs(30))
+        })();
+        let _ = inst.cdp.call(
+            "Target.closeTarget",
+            json!({ "targetId": target_id }),
+            None,
+            Duration::from_secs(5),
+        );
+        self.shared.schedule_quit_if_unused();
+        let results = result?;
+        Ok(json!({ "service": plugin.name(), "query": query, "results": results }))
+    }
+
     fn respond(&self, inst: &Instance, player: &ChromePlayer, result: Value) -> Result<Value> {
         let service = {
             let mut c = player.content.lock().unwrap();

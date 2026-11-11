@@ -58,6 +58,14 @@ pub enum Request {
     CastStatus,
     /// A code for the YouTube app's "Link with TV code".
     CastCode,
+    /// Search a service in a hidden tab (the player is not touched).
+    Search {
+        service: String,
+        query: String,
+        #[serde(default)]
+        kind: Option<String>,
+        limit: usize,
+    },
 }
 
 /// Actions executed by the plugin adapter (forwarded to JavaScript as-is).

@@ -186,6 +186,20 @@ impl Router {
             Request::Cast { config } => Ok(self.cast.set_config(config)),
             Request::CastStatus => Ok(self.cast.status()),
             Request::CastCode => self.cast.tv_code(),
+            Request::Search {
+                service,
+                query,
+                kind,
+                limit,
+            } => {
+                let plugin = self
+                    .registry
+                    .get(&service)
+                    .ok_or_else(|| format!("no plugin named {service:?}"))?;
+                self.chrome
+                    .search(plugin, &query, kind.as_deref(), limit)
+                    .map_err(err)
+            }
         }
     }
 

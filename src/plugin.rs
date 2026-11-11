@@ -39,6 +39,45 @@ pub struct Manifest {
     #[serde(default)]
     pub notes: Vec<String>,
     pub auth: Option<Auth>,
+    /// `tvctl search`: the plugin's search page, scraped by its `search.js`.
+    pub search: Option<Search>,
+}
+
+/// The file with a plugin's search scraper.
+pub const SEARCH_SCRIPT: &str = "search.js";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Search {
+    /// Search page URL; `{query}` is replaced by the URL-encoded query.
+    pub url: String,
+    /// Result kinds the scraper reports (e.g. video, track, artist), shown in
+    /// `tvctl plugins`.
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    /// Search pages limited to one kind (`tvctl search --kind`), by kind.
+    #[serde(default)]
+    pub kind_urls: BTreeMap<String, String>,
+}
+
+impl Search {
+    /// The search page for `query`, of one `kind` when given.
+    pub fn page_url(&self, query: &str, kind: Option<&str>) -> Result<String> {
+        let template = match kind {
+            None => &self.url,
+            Some(k) => self.kind_urls.get(k).ok_or_else(|| {
+                let known: Vec<&str> = self.kind_urls.keys().map(String::as_str).collect();
+                if known.is_empty() {
+                    anyhow::anyhow!("this service has no --kind")
+                } else {
+                    anyhow::anyhow!("unknown kind {k:?} (kinds: {})", known.join(", "))
+                }
+            })?,
+        };
+        let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
+        // A path segment needs %20, not +.
+        Ok(template.replace("{query}", &encoded.replace('+', "%20")))
+    }
 }
 
 /// Every player action a plugin can declare.
@@ -189,6 +228,11 @@ impl Plugin {
             "examples": m.examples,
             "actions": m.actions,
             "login": login,
+            "search": m.search.as_ref().map(|s| serde_json::json!({
+                "command": format!("tvctl search {} <query>", m.name),
+                "kinds": s.kinds,
+                "kind_filter": s.kind_urls.keys().collect::<Vec<_>>(),
+            })),
             "notes": m.notes,
             "source": self.source,
         })
@@ -244,6 +288,20 @@ impl Plugin {
                 manifest.name,
                 a.main_site()
             );
+        }
+        if let Some(s) = &manifest.search {
+            if std::iter::once(&s.url)
+                .chain(s.kind_urls.values())
+                .any(|u| !u.contains("{query}"))
+            {
+                bail!("plugin {}: a search url has no {{query}}", manifest.name);
+            }
+            if !files.contains_key(SEARCH_SCRIPT) {
+                bail!(
+                    "plugin {}: has [search] but no {SEARCH_SCRIPT}",
+                    manifest.name
+                );
+            }
         }
         if !files.contains_key(ADAPTER) {
             bail!("plugin {}: missing {ADAPTER}", manifest.name);
@@ -401,6 +459,53 @@ fn load_dir(dir: &Path) -> Result<Plugin> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_urls() {
+        let r = Registry::load().unwrap();
+        let spotify = r.get("spotify").unwrap().manifest.search.as_ref().unwrap();
+        assert_eq!(
+            spotify.page_url("First Love", None).unwrap(),
+            "https://open.spotify.com/search/First%20Love"
+        );
+        assert_eq!(
+            spotify.page_url("a&b", Some("track")).unwrap(),
+            "https://open.spotify.com/search/a%26b/tracks"
+        );
+        assert!(spotify.page_url("x", Some("podcast")).is_err());
+        let yt = r.get("youtube").unwrap();
+        assert!(yt.file(SEARCH_SCRIPT).is_some());
+        assert_eq!(
+            yt.manifest
+                .search
+                .as_ref()
+                .unwrap()
+                .page_url("日本", None)
+                .unwrap(),
+            "https://www.youtube.com/results?search_query=%E6%97%A5%E6%9C%AC"
+        );
+        assert!(
+            yt.manifest
+                .search
+                .as_ref()
+                .unwrap()
+                .page_url("x", Some("video"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn search_needs_its_script() {
+        let files = BTreeMap::from([
+            (
+                "plugin.toml".to_string(),
+                "name = \"x\"\ndomains = [\"x.com\"]\nactions = []\n[search]\nurl = \"https://x.com/s?q={query}\"\n".to_string(),
+            ),
+            ("chrome.js".to_string(), String::new()),
+        ]);
+        let e = Plugin::from_files(files, "test".into()).unwrap_err();
+        assert!(format!("{e}").contains("search.js"), "{e}");
+    }
 
     #[test]
     fn builtins_load_and_route() {
