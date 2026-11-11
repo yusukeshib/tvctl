@@ -29,3 +29,10 @@ logged_in_cookies = ["at-main", "sess-at-main"]
 login_url = "https://www.amazon.co.jp/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.co.jp%2Fgp%2Fvideo%2Fstorefront&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=jpflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0"
 cookie_url = "https://www.amazon.co.jp"
 logged_in_cookies = ["at-acbjp", "sess-at-acbjp"]
+
+[search]
+url = "https://www.amazon.com/s?k={query}&i=instant-video"
+kinds = ["title"]
+
+[search.site_urls]
+jp = "https://www.amazon.co.jp/s?k={query}&i=instant-video"

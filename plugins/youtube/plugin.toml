@@ -11,6 +11,10 @@ notes = [
   "`next` / `previous` move within a playlist.",
 ]
 
+[search]
+url = "https://www.youtube.com/results?search_query={query}"
+kinds = ["video"]
+
 [auth]
 login_url = "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26next%3Dhttps%253A%252F%252Fwww.youtube.com%252F"
 cookie_url = "https://www.youtube.com"

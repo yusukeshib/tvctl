@@ -201,6 +201,25 @@ enum Cmd {
     },
     /// Close the player window.
     Close,
+    /// Search a service (see `tvctl plugins` for which have search) and print
+    /// results with URLs for `tvctl open`. Runs in a hidden tab of tvctl's Chrome
+    /// (with its logins); the player is not touched.
+    Search {
+        /// Plugin name, e.g. youtube or spotify.
+        service: String,
+        /// What to search for.
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+        /// Only results of this kind, e.g. track or artist (see `tvctl plugins`).
+        #[arg(long)]
+        kind: Option<String>,
+        /// Another site of the service, e.g. jp for amazon.co.jp (see `tvctl plugins`).
+        #[arg(long)]
+        site: Option<String>,
+        /// Maximum number of results.
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
     /// Log in to a service in tvctl's Chrome profile.
     Auth {
         #[command(subcommand)]
@@ -474,6 +493,19 @@ fn plan(cmd: Cmd) -> Result<Plan> {
                 window,
             }
         }
+        Cmd::Search {
+            service,
+            query,
+            kind,
+            site,
+            limit,
+        } => Request::Search {
+            service,
+            query: query.join(" "),
+            kind,
+            site,
+            limit: limit.max(1),
+        },
         Cmd::Auth { action } => match action {
             AuthCmd::Login { service, site } => Request::AuthLogin { service, site },
             AuthCmd::Status { service } => Request::AuthStatus { service },

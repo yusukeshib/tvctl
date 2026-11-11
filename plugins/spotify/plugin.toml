@@ -12,6 +12,18 @@ notes = [
   "`--paused` is best effort; playback is refused when the account is playing on another device.",
 ]
 
+[search]
+url = "https://open.spotify.com/search/{query}"
+kinds = ["track", "album", "artist", "playlist", "episode", "show"]
+
+[search.kind_urls]
+track = "https://open.spotify.com/search/{query}/tracks"
+album = "https://open.spotify.com/search/{query}/albums"
+artist = "https://open.spotify.com/search/{query}/artists"
+playlist = "https://open.spotify.com/search/{query}/playlists"
+episode = "https://open.spotify.com/search/{query}/episodes"
+show = "https://open.spotify.com/search/{query}/shows"
+
 [auth]
 required = true
 login_url = "https://accounts.spotify.com/login?continue=https%3A%2F%2Fopen.spotify.com%2F"

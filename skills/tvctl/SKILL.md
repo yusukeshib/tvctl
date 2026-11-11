@@ -54,7 +54,8 @@ There is one player window. `open` opens it if there is none; otherwise the URL
 replaces what it shows. `open` makes the window fullscreen unless `--windowed`,
 `--size`, `--position` or `--layout` is given (leaving fullscreen returns it to
 its place and size). Player commands take no id; they act on that window.
-`open`, player,
+To find something to play, use `tvctl search` where the service has it (not a
+browser); it does not touch the player. `open`, player, `search`,
 `auth` and `cast code` commands need the background server; nothing starts it
 implicitly. If one fails with `server is not running`, run `tvctl server up` and
 retry. It keeps running, with or without a player, until `tvctl server down`.
@@ -62,6 +63,7 @@ Quote URLs (`'...'`): `?` and `&` break in shells such as zsh.
 
 | Goal | Command |
 |---|---|
+| Find a URL | `tvctl search youtube <query>`, `tvctl search spotify <query> --kind track`, `tvctl search netflix <query>`, `tvctl search primevideo <query> --site jp`, `tvctl search crunchyroll <query>` (results with `url`s; kinds and sites: `tvctl plugins`) |
 | Play / pause / toggle | `tvctl play`, `tvctl pause`, `tvctl toggle` |
 | Next / previous item | `tvctl next`, `tvctl prev` |
 | Seek | `tvctl seek 1:30` (absolute), `tvctl seek +30` / `-10` (relative) |
