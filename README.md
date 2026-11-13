@@ -191,6 +191,9 @@ tvctl cast off
 
 ## Blackout
 
+In fullscreen, the mouse cursor hides after 10 seconds without movement.
+Moving the mouse shows it again; leaving fullscreen restores the normal cursor.
+
 A player that has been paused or has ended for 60 seconds turns black (the
 whole window content). Moving the mouse over the window, clicking, scrolling or
 typing in it brings the picture back without passing that input to the player,
@@ -337,6 +340,7 @@ JavaScript in the player page and prints the (awaited) result.
 ## Tests
 
 ```sh
+node --test tests/cursor.test.cjs                           # cursor idle timer tests
 cargo test                                                   # unit tests
 cargo test --test e2e_fake -- --ignored --test-threads=1     # all commands, offline
 cargo test --test e2e_youtube -- --ignored --test-threads=1  # real YouTube (network)

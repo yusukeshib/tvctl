@@ -545,6 +545,13 @@ impl Backend {
             Some(&session_id),
             Duration::from_secs(5),
         )?;
+        // Hide an idle mouse cursor only in fullscreen (including embedded players).
+        inst.cdp.call(
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({ "source": include_str!("../cursor.js") }),
+            Some(&session_id),
+            Duration::from_secs(5),
+        )?;
         // Black after a while paused or ended (main frame only; the script checks).
         inst.cdp.call(
             "Page.addScriptToEvaluateOnNewDocument",
@@ -1068,13 +1075,14 @@ fn run_adapter(
     // misses the document that was loading when the window opened. A player
     // command is activity, which removes the blackout.
     let blackout = blackout::page_script();
+    let cursor = include_str!("../cursor.js");
     let wake = if action["action"] == "status" {
         ""
     } else {
         blackout::WAKE_SCRIPT
     };
     let expr = format!(
-        "(async () => {{\nif (!window.__tvctl) {{\n{adapter}\n}}\n{blackout}\n{wake}\nreturn await window.__tvctl.run({action});\n}})()"
+        "(async () => {{\nif (!window.__tvctl) {{\n{adapter}\n}}\n{blackout}\n{cursor}\n{wake}\nreturn await window.__tvctl.run({action});\n}})()"
     );
     evaluate(inst, player, &expr, timeout)
 }
