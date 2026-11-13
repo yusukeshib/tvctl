@@ -627,6 +627,56 @@ fn duck_hook_scales_media_volume_invisibly() {
     assert_eq!(env.ok(&["__eval", faded]), json!([0.8, 0.2]));
 }
 
+#[test]
+#[ignore = "opens an isolated Chrome window"]
+fn fullscreen_cursor_idle() {
+    let env = Env::new();
+    env.up();
+    open(&env, "/video/1", &["--windowed"]);
+    let hidden = || {
+        env.ok(&[
+            "__eval",
+            "getComputedStyle(document.body).cursor === 'none'",
+        ]) == true
+    };
+    std::thread::sleep(Duration::from_secs(11));
+    assert!(!hidden(), "windowed cursor must stay visible");
+    env.ok(&["fullscreen", "on"]);
+    eventually(
+        "native fullscreen media query",
+        Duration::from_secs(5),
+        || env.ok(&["__eval", "matchMedia('(display-mode: fullscreen)').matches"]) == true,
+    );
+    // Let the native fullscreen animation (and its mouse events) finish.
+    std::thread::sleep(Duration::from_secs(2));
+    // Use a known position so synthetic stationary moves cannot reset the timer.
+    env.ok(&[
+        "__eval",
+        "window.dispatchEvent(new MouseEvent('mousemove', {screenX: 100, screenY: 100}))",
+    ]);
+    std::thread::sleep(Duration::from_secs(9));
+    assert!(!hidden(), "cursor must not hide before ten seconds");
+    eventually(
+        "idle fullscreen cursor hidden",
+        Duration::from_secs(4),
+        hidden,
+    );
+    env.ok(&[
+        "__eval",
+        "window.dispatchEvent(new MouseEvent('mousemove', {screenX: 101, screenY: 100}))",
+    ]);
+    assert!(!hidden(), "movement must restore the cursor immediately");
+    eventually("cursor hides again", Duration::from_secs(12), hidden);
+    env.ok(&["fullscreen", "off"]);
+    eventually("native fullscreen exited", Duration::from_secs(15), || {
+        env.ok(&["status"])["window"]["fullscreen"] == false
+    });
+    eventually("windowed cursor restored", Duration::from_secs(15), || {
+        !hidden()
+    });
+    env.ok(&["close"]);
+}
+
 fn blackout(env: &Env) -> bool {
     env.ok(&["status"])["window"]["blackout"]
         .as_bool()
