@@ -188,9 +188,16 @@ impl std::fmt::Display for HostError {
 /// URL in the player and returns a token for what it shows; `player` and
 /// `close` act only while the player still shows that. With `expect`, `open`
 /// only replaces content `expect` (else `Gone`); without, it takes the player
-/// over whatever it shows.
+/// over whatever it shows. With `fullscreen`, the window goes fullscreen;
+/// otherwise it stays as it is.
 pub trait Host: Sync {
-    fn open(&self, url: &str, start: f64, expect: Option<u64>) -> Result<(u64, Value), HostError>;
+    fn open(
+        &self,
+        url: &str,
+        start: f64,
+        expect: Option<u64>,
+        fullscreen: bool,
+    ) -> Result<(u64, Value), HostError>;
     fn player(&self, token: u64, action: PlayerAction) -> Result<Value, HostError>;
     fn close(&self, token: u64) -> Result<(), HostError>;
 }

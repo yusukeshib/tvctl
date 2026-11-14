@@ -671,9 +671,11 @@ impl<'a> Controller<'a> {
 
     /// Plays `video` in the player (replacing what it shows; the window keeps
     /// its place) and returns the player's response. With `expect`, only if the
-    /// player still shows that content.
+    /// player still shows that content. The window goes fullscreen when the
+    /// cast starts (see `starts_cast`).
     fn play_in(&mut self, video: Video, start: f64, expect: Option<u64>) -> Result<Value, String> {
         eprintln!("cast: play {} at {start}", video.id);
+        let fullscreen = starts_cast(self.player);
         self.player = None;
         self.current = Some(video.clone());
         self.status = LOADING;
@@ -682,7 +684,7 @@ impl<'a> Controller<'a> {
         self.measured = Instant::now();
         self.send(vec![self.on_state_change(), self.now_playing(), self.nav()]);
         let url = format!("https://www.youtube.com/watch?v={}", video.id);
-        let result = match self.host.open(&url, start, expect) {
+        let result = match self.host.open(&url, start, expect, fullscreen) {
             Ok((token, v)) => {
                 self.player = Some(token);
                 self.update_from(&v);
@@ -763,6 +765,14 @@ impl<'a> Controller<'a> {
     }
 }
 
+/// Whether playing a video starts the cast in the player: the player does not
+/// show a cast video (`player`) yet, or no longer does (stopped or closed). Like
+/// `tvctl open`, that goes fullscreen; the videos that follow (the app's next or
+/// previous, another pick, the queue going on) keep the window as it is.
+fn starts_cast(player: Option<u64>) -> bool {
+    player.is_none()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -772,6 +782,8 @@ mod tests {
     #[derive(Default)]
     struct FakeHost {
         calls: Mutex<Vec<String>>,
+        /// The `fullscreen` argument of each `open`.
+        fullscreen: Mutex<Vec<bool>>,
         state: Mutex<String>,
         /// Token of what the player shows; None when the window is closed.
         showing: Mutex<Option<u64>>,
@@ -807,10 +819,12 @@ mod tests {
             url: &str,
             start: f64,
             expect: Option<u64>,
+            fullscreen: bool,
         ) -> Result<(u64, Value), HostError> {
             if let Some(token) = expect {
                 self.check(token)?;
             }
+            self.fullscreen.lock().unwrap().push(fullscreen);
             self.calls
                 .lock()
                 .unwrap()
@@ -911,6 +925,41 @@ mod tests {
                 r#"2 {"action":"volume","level":40,"muted":false}"#.into(),
             ]
         );
+    }
+
+    /// The cast's first video goes fullscreen (as `tvctl open` does); the videos
+    /// that follow keep the window, until the player no longer shows the cast.
+    #[test]
+    fn fullscreen_when_the_cast_starts() {
+        let host = FakeHost::default();
+        let mut c = controller(&host);
+        let pick = |id: &str, index: &str| {
+            msg(
+                "setPlaylist",
+                json!({"listId": "RQ1", "videoId": id, "currentIndex": index, "videoIds": "a,b,c"}),
+            )
+        };
+        let opens = || host.fullscreen.lock().unwrap().clone();
+        c.handle(vec![pick("b", "1")]);
+        assert_eq!(opens(), [true]);
+        // The app's next button and another pick in the app.
+        c.handle(vec![msg("next", Value::Null)]);
+        c.handle(vec![pick("a", "0")]);
+        // The queue going on at the end of a video.
+        *host.state.lock().unwrap() = "ended".into();
+        c.tick();
+        assert_eq!(c.current.as_ref().unwrap().id, "b");
+        assert_eq!(opens(), [true, false, false, false]);
+        // Something else opened from the command line: the next cast starts again.
+        host.replace();
+        c.tick();
+        c.handle(vec![pick("c", "2")]);
+        assert_eq!(opens().last(), Some(&true));
+        // The window was closed.
+        *host.showing.lock().unwrap() = None;
+        c.tick();
+        c.handle(vec![pick("a", "0")]);
+        assert_eq!(opens(), [true, false, false, false, true, true]);
     }
 
     #[test]

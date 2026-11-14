@@ -15,7 +15,7 @@ use crate::cast::{self, HostError};
 use crate::client;
 use crate::duck;
 use crate::plugin::{Plugin, Registry};
-use crate::protocol::{PlayerAction, Request, Response, WindowOpts};
+use crate::protocol::{PlayerAction, Request, Response, Switch, WindowOpts};
 
 pub use chrome::Gone;
 
@@ -34,7 +34,13 @@ fn host_error(e: anyhow::Error) -> HostError {
 }
 
 impl cast::Host for Router {
-    fn open(&self, url: &str, start: f64, expect: Option<u64>) -> Result<(u64, Value), HostError> {
+    fn open(
+        &self,
+        url: &str,
+        start: f64,
+        expect: Option<u64>,
+        fullscreen: bool,
+    ) -> Result<(u64, Value), HostError> {
         let (plugin, url) = self
             .registry
             .for_url(url)
@@ -46,8 +52,12 @@ impl cast::Host for Router {
             "paused": false,
             "subtitles": null,
         });
+        let window = WindowOpts {
+            fullscreen: fullscreen.then_some(Switch::On),
+            ..WindowOpts::default()
+        };
         self.chrome
-            .open(plugin, action, &WindowOpts::default(), expect)
+            .open(plugin, action, &window, expect)
             .map_err(host_error)
     }
 
