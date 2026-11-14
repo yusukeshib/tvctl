@@ -22,8 +22,6 @@ pub use chrome::Gone;
 struct Router {
     registry: Arc<Registry>,
     chrome: chrome::Backend,
-    /// Started from an SSH session (see `SSH_SESSION_WARNING`).
-    ssh_session: bool,
     duck: duck::Duck,
     cast: cast::Cast,
 }
@@ -80,49 +78,12 @@ impl duck::Host for Router {
     }
 }
 
-/// macOS keeps the key that Chrome encrypts cookies with in the login keychain,
-/// which processes of an SSH session cannot use: Chrome started by such a
-/// server neither saves new logins nor loads saved ones.
-const SSH_SESSION_WARNING: &str = "the tvctl server was started from an SSH session, so its Chrome cannot \
-     use the macOS keychain: logins are not saved and saved logins are not loaded (and phones \
-     may not find its cast receiver). Run \
-     `tvctl server down`, then run tvctl from a terminal on this Mac's own screen (not over SSH)";
-
-/// Whether this process belongs to an SSH session.
-fn in_ssh_session() -> bool {
-    ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
-        .iter()
-        .any(|v| std::env::var_os(v).is_some_and(|s| !s.is_empty()))
-}
-
 fn err(e: anyhow::Error) -> String {
     format!("{e:#}")
 }
 
 impl Router {
-    /// Handles a request; logins and player responses of a server started over
-    /// SSH get a warning (logins there do not persist, so `auth login` is
-    /// refused).
     fn handle(&self, req: Request) -> Result<Value, String> {
-        if !self.ssh_session {
-            return self.handle_inner(req);
-        }
-        let warn = match &req {
-            Request::AuthLogin { .. } => return Err(SSH_SESSION_WARNING.to_string()),
-            Request::AuthStatus { .. } | Request::Ping => true,
-            Request::Open { .. } => false,
-            _ => return self.handle_inner(req),
-        };
-        let mut v = self.handle_inner(req)?;
-        if (warn || v.get("player").is_some())
-            && let Some(obj) = v.as_object_mut()
-        {
-            obj.insert("warning".into(), SSH_SESSION_WARNING.into());
-        }
-        Ok(v)
-    }
-
-    fn handle_inner(&self, req: Request) -> Result<Value, String> {
         match req {
             Request::Ping => Ok(self.info()),
             Request::Shutdown => {
@@ -241,7 +202,6 @@ impl Router {
             "socket": client::socket_path(),
             "log": client::log_path(),
             "player": self.chrome.summary(),
-            "ssh_session": self.ssh_session,
         })
     }
 
@@ -264,6 +224,8 @@ pub fn run() -> Result<()> {
     if client::is_running() {
         bail!("server already running at {}", socket.display());
     }
+    // Chrome started without the keychain loses tvctl's logins.
+    crate::keychain::check()?;
     let registry = Arc::new(Registry::load().context("loading plugins")?);
     let _ = std::fs::remove_file(&socket);
     let listener =
@@ -271,7 +233,6 @@ pub fn run() -> Result<()> {
     let router = Arc::new(Router {
         registry,
         chrome: chrome::Backend::new(),
-        ssh_session: in_ssh_session(),
         duck: duck::Duck::new(duck::load()),
         cast: cast::Cast::new(cast::load()),
     });
