@@ -87,35 +87,22 @@ fn server_lifecycle() {
     assert!(no_player(&env));
 }
 
-/// A server started from an SSH session cannot keep Chrome logins (no keychain):
-/// `auth login` is refused, and login state and player responses carry a warning.
+/// A server whose Chrome could not use the login keychain would lose tvctl's
+/// logins, so `server up` refuses to start one.
 #[test]
-#[ignore = "opens windows; run with --ignored"]
-fn ssh_session_warnings() {
+fn server_up_needs_the_keychain() {
     let env = Env::new();
-    let ssh = [("SSH_CONNECTION", "10.0.0.1 50000 10.0.0.2 22")];
-    let up = env.run_with_env(&["server", "up"], &ssh).unwrap();
-    assert_eq!(up["ssh_session"], true, "{up}");
-    assert!(up["warning"].as_str().unwrap().contains("SSH session"));
-    // Later clients (even from the Mac's own screen) reach that same server.
-    let st = env.ok(&["server", "status"]);
-    assert_eq!(st["ssh_session"], true);
-    let e = env.err(&["auth", "login", "fake"]);
+    let e = env
+        .run_with_env(
+            &["server", "up"],
+            &[("TVCTL_TEST_KEYCHAIN_UNAVAILABLE", "1")],
+        )
+        .unwrap_err();
     assert!(
-        e.contains("started from an SSH session") && e.contains("tvctl server down"),
+        e.contains("login keychain") && e.contains("own screen"),
         "{e}"
     );
-    assert!(env.ok(&["auth", "status"])["warning"].is_string());
-    let v = open(&env, "/video/1", &[]);
-    assert!(v["warning"].as_str().unwrap().contains("keychain"), "{v}");
-    env.ok(&["server", "down"]);
-    // Started without SSH, there is no warning.
-    let up = env.ok(&["server", "up"]);
-    if std::env::var_os("SSH_CONNECTION").is_none() {
-        assert_eq!(up["ssh_session"], false);
-        assert!(up["warning"].is_null());
-        assert!(open(&env, "/video/1", &[])["warning"].is_null());
-    }
+    assert!(!running(&env), "a server was started");
 }
 
 fn running(env: &Env) -> bool {

@@ -176,7 +176,8 @@ tvctl cast off
 
 - The receiver runs in the tvctl server; `tvctl cast on` does not start the
   server. After a reboot or `tvctl server down` it runs again as soon as
-  `tvctl server up` starts the server.
+  `tvctl server up` starts the server. With casting on, `server up` fails (and
+  stops the server it started) when the receiver cannot start.
 - Discovery uses DIAL (SSDP on UDP port 1900 and an HTTP port); macOS may ask
   to allow incoming connections, and iOS asks the YouTube app for local network
   access. If the Mac does not appear, use `tvctl cast code` in the app under
@@ -211,12 +212,10 @@ works). Chrome refuses DevTools control of your everyday profile, so tvctl has
 its own; sign in to each service once with `tvctl auth login`. The server
 itself is a plain background process (no Dock icon or window).
 
-Run tvctl from a terminal on the Mac's own screen. A server started from an
-SSH session cannot use the macOS keychain, where Chrome keeps the key for its
-saved cookies, so logins would not be saved or loaded (and phones may not find
-its cast receiver on the network): such a server refuses
-`auth login` and adds a `warning` to `auth status`, `server status` and `open` (`server status` also shows `ssh_session`). Stop it with
-`tvctl server down` and start tvctl again from the Mac's screen.
+Run `tvctl server up` from a terminal on the Mac's own screen. Chrome keeps the
+key for its saved cookies in the macOS login keychain; a Chrome that cannot use
+it (for example one started over SSH) loses tvctl's logins. So `server up`
+fails, without starting a server, when it cannot use the login keychain.
 
 `auth login` opens the login page in a plain Chrome (not controlled, because
 Google refuses sign-in in automated browsers) on tvctl's profile. Sign in, then

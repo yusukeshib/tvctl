@@ -80,7 +80,7 @@ login_mode = "controlled"
         self.run_with_env(args, &[])
     }
 
-    /// Like `run`, with extra environment variables (e.g. `SSH_CONNECTION`).
+    /// Like `run`, with extra environment variables (e.g. test hooks).
     pub fn run_with_env(&self, args: &[&str], vars: &[(&str, &str)]) -> Result<Value, String> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_tvctl"))
             .args(args)

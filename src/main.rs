@@ -4,6 +4,7 @@ mod cast;
 mod cdp;
 mod client;
 mod duck;
+mod keychain;
 mod layout;
 mod plugin;
 mod protocol;

@@ -67,13 +67,26 @@ fn exchange(stream: UnixStream, req: &Request) -> Result<Value> {
 
 /// `server up`: starts the server unless it is running. Only `server up` and
 /// `server down` start and stop it; other commands fail without a server.
+/// It refuses to start one that cannot use the login keychain (its Chrome would
+/// lose tvctl's logins). With casting on, it also fails when the cast receiver
+/// cannot start (and stops a server it started), since phones would not find
+/// this Mac.
 pub fn server_up() -> Result<Value> {
     if is_running() {
         let mut info = send(&Request::Ping)?;
+        if let Err(e) = wait_for_cast() {
+            bail!("the server is running, but {e:#}");
+        }
         info["already_running"] = json!(true);
         return Ok(info);
     }
+    // The server inherits this process's session, so it would fail the same way.
+    crate::keychain::check()?;
     start()?;
+    if let Err(e) = wait_for_cast() {
+        let _ = server_down();
+        bail!("{e:#} (the server was stopped)");
+    }
     let mut info = send(&Request::Ping)?;
     info["already_running"] = json!(false);
     Ok(info)
@@ -103,6 +116,41 @@ fn start() -> Result<()> {
         std::thread::sleep(Duration::from_millis(100));
     }
     bail!("server did not start; see {}", log_path().display())
+}
+
+/// How long `server up` waits for the cast receiver (it signs in to YouTube first).
+const CAST_START_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Waits until the running server's cast receiver runs, if casting is on. Fails
+/// if the receiver reports an error or does not start in time.
+fn wait_for_cast() -> Result<()> {
+    let deadline = Instant::now() + CAST_START_TIMEOUT;
+    loop {
+        let status = send(&Request::CastStatus)?;
+        if status["enabled"] != json!(true) {
+            return Ok(());
+        }
+        cast_error(&status)?;
+        if status["running"] == json!(true) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "the cast receiver did not start within {} seconds; see {}",
+                CAST_START_TIMEOUT.as_secs(),
+                log_path().display()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Fails with the error a cast status reports, if any.
+fn cast_error(status: &Value) -> Result<()> {
+    match status["error"].as_str() {
+        Some(e) => bail!("the cast receiver could not start: {e}"),
+        None => Ok(()),
+    }
 }
 
 pub fn server_down() -> Result<Value> {
@@ -148,7 +196,9 @@ pub fn duck_apps() -> Result<Value> {
 pub fn cast_set(config: crate::cast::Config) -> Result<Value> {
     crate::cast::save(&config)?;
     if is_running() {
-        send(&Request::Cast { config })
+        let status = send(&Request::Cast { config })?;
+        cast_error(&status)?;
+        Ok(status)
     } else {
         Ok(crate::cast::offline_status(&config))
     }
