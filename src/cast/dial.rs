@@ -16,6 +16,14 @@ const DIAL_DEVICE: &str = "urn:dial-multiscreen-org:device:dial:1";
 const SERVER: &str = "macOS UPnP/1.1 tvctl";
 /// Announcements are repeated this often (they are valid for 30 minutes).
 const NOTIFY_EVERY: Duration = Duration::from_secs(600);
+/// How often the interface addresses are compared with the ones the SSDP
+/// socket joined the multicast group on.
+const CHECK_INTERFACES_EVERY: Duration = Duration::from_secs(5);
+/// The SSDP socket is recreated (joining the multicast group again) this
+/// often even when the addresses did not change: a long-running socket can
+/// silently stop receiving multicast after network changes (Wi-Fi reconnects,
+/// VPN interfaces coming and going) while a fresh one receives it.
+const REJOIN_EVERY: Duration = Duration::from_secs(60);
 
 /// Handles `POST /apps/YouTube` with the request body.
 pub type LaunchFn = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
@@ -40,7 +48,8 @@ impl Dial {
     pub fn start(device: Arc<Device>) -> Result<Dial> {
         let listener = TcpListener::bind("0.0.0.0:0").context("starting the DIAL HTTP server")?;
         let port = listener.local_addr()?.port();
-        let ssdp = ssdp_socket().context(
+        let addrs = interface_addrs();
+        let ssdp = ssdp_socket(&addrs).context(
             "listening for SSDP on UDP port 1900 (is another program using it exclusively?)",
         )?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -51,7 +60,7 @@ impl Dial {
         }
         {
             let stop = stop.clone();
-            std::thread::spawn(move || serve_ssdp(ssdp, &device, port, &stop));
+            std::thread::spawn(move || serve_ssdp(ssdp, addrs, &device, port, &stop));
         }
         Ok(Dial { stop, port })
     }
@@ -74,15 +83,17 @@ impl Drop for Dial {
 
 // ---------- SSDP ----------
 
-fn ssdp_socket() -> Result<UdpSocket> {
+/// A socket bound to the SSDP port that joined the multicast group on each of
+/// `addrs` (or on the default interface when there are none).
+fn ssdp_socket(addrs: &[Ipv4Addr]) -> Result<UdpSocket> {
     use socket2::{Domain, Protocol, Socket, Type};
     let s = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     s.set_reuse_address(true)?;
     s.set_reuse_port(true)?;
     s.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, SSDP_PORT).into())?;
     let mut joined = false;
-    for ip in interface_addrs() {
-        if s.join_multicast_v4(&SSDP_ADDR, &ip).is_ok() {
+    for ip in addrs {
+        if s.join_multicast_v4(&SSDP_ADDR, ip).is_ok() {
             joined = true;
         }
     }
@@ -93,7 +104,8 @@ fn ssdp_socket() -> Result<UdpSocket> {
     Ok(s.into())
 }
 
-/// IPv4 addresses of the network interfaces that are up (not loopback).
+/// IPv4 addresses of the up, multicast-capable LAN interfaces (not loopback,
+/// not point-to-point VPN tunnels such as Tailscale's utun), sorted.
 #[cfg(target_os = "macos")]
 fn interface_addrs() -> Vec<Ipv4Addr> {
     let mut out = Vec::new();
@@ -107,10 +119,12 @@ fn interface_addrs() -> Vec<Ipv4Addr> {
         let mut cur = list;
         while !cur.is_null() {
             let ifa = &*cur;
-            let up = ifa.ifa_flags & (libc::IFF_UP as u32) != 0;
-            let loopback = ifa.ifa_flags & (libc::IFF_LOOPBACK as u32) != 0;
-            if up
-                && !loopback
+            let has = |flag: libc::c_int| ifa.ifa_flags & (flag as u32) != 0;
+            if has(libc::IFF_UP)
+                && has(libc::IFF_RUNNING)
+                && has(libc::IFF_MULTICAST)
+                && !has(libc::IFF_LOOPBACK)
+                && !has(libc::IFF_POINTOPOINT)
                 && !ifa.ifa_addr.is_null()
                 && i32::from((*ifa.ifa_addr).sa_family) == libc::AF_INET
             {
@@ -124,6 +138,7 @@ fn interface_addrs() -> Vec<Ipv4Addr> {
         }
         libc::freeifaddrs(list);
     }
+    out.sort();
     out
 }
 
@@ -193,11 +208,38 @@ fn notify(socket: &UdpSocket, uuid: &str, port: u16, nts: &str) {
     }
 }
 
-fn serve_ssdp(socket: UdpSocket, device: &Device, port: u16, stop: &AtomicBool) {
-    let reply_socket = UdpSocket::bind("0.0.0.0:0").ok();
+fn serve_ssdp(
+    mut socket: UdpSocket,
+    mut addrs: Vec<Ipv4Addr>,
+    device: &Device,
+    port: u16,
+    stop: &AtomicBool,
+) {
     let mut last_notify: Option<Instant> = None;
+    let mut last_check = Instant::now();
+    let mut last_join = Instant::now();
     let mut buf = [0u8; 2048];
     while !stop.load(Ordering::SeqCst) {
+        if last_check.elapsed() >= CHECK_INTERFACES_EVERY {
+            last_check = Instant::now();
+            let now = interface_addrs();
+            let changed = now != addrs;
+            if changed || last_join.elapsed() >= REJOIN_EVERY {
+                last_join = Instant::now();
+                match ssdp_socket(&now) {
+                    Ok(fresh) => {
+                        socket = fresh;
+                        if changed {
+                            eprintln!("cast: network addresses changed to {now:?}; SSDP rejoined");
+                            // Announce on the new addresses right away.
+                            last_notify = None;
+                        }
+                        addrs = now;
+                    }
+                    Err(e) => eprintln!("cast: recreating the SSDP socket failed: {e:#}"),
+                }
+            }
+        }
         if last_notify.is_none_or(|t| t.elapsed() >= NOTIFY_EVERY) {
             notify(&socket, &device.uuid, port, "ssdp:alive");
             last_notify = Some(Instant::now());
@@ -210,10 +252,8 @@ fn serve_ssdp(socket: UdpSocket, device: &Device, port: u16, stop: &AtomicBool) 
             continue;
         };
         let location = format!("http://{ip}:{port}/ssdp/device-desc.xml");
-        if let Some(reply) = search_reply(&msg, &device.uuid, &location)
-            && let Some(s) = &reply_socket
-        {
-            match s.send_to(reply.as_bytes(), peer) {
+        if let Some(reply) = search_reply(&msg, &device.uuid, &location) {
+            match socket.send_to(reply.as_bytes(), peer) {
                 Ok(_) => super::trace(format_args!("SSDP search from {peer}, answered")),
                 Err(e) => super::trace(format_args!("SSDP search from {peer}, reply failed: {e}")),
             }
