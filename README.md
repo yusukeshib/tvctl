@@ -180,7 +180,11 @@ tvctl cast off
   stops the server it started) when the receiver cannot start.
 - Discovery uses DIAL (SSDP on UDP port 1900 and an HTTP port); macOS may ask
   to allow incoming connections, and iOS asks the YouTube app for local network
-  access. If the Mac does not appear, use `tvctl cast code` in the app under
+  access. macOS also needs Local Network access (System Settings > Privacy &
+  Security > Local Network) for the app tvctl is started from, such as
+  Terminal; without it macOS silently drops the discovery traffic, so the
+  receiver checks at start and `server up` fails with that message. If the Mac
+  does not appear, use `tvctl cast code` in the app under
   Settings > Watch on TV > Link with TV code.
 - YouTube only (YouTube Music casting is refused). Autoplay of recommended
   videos after the queue ends is not supported.
