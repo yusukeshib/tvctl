@@ -183,7 +183,10 @@ tvctl cast off
   access. macOS also needs Local Network access (System Settings > Privacy &
   Security > Local Network) for the app tvctl is started from, such as
   Terminal; without it macOS silently drops the discovery traffic, so the
-  receiver checks at start and `server up` fails with that message. If the Mac
+  receiver checks at start and `server up` fails with that message. While
+  running it checks every 30 seconds that its own discovery traffic still
+  arrives, recreates its socket when it stops, and shows `discovery_error` in
+  `tvctl cast status` if that does not help. If the Mac
   does not appear, use `tvctl cast code` in the app under
   Settings > Watch on TV > Link with TV code.
 - YouTube only (YouTube Music casting is refused). Autoplay of recommended

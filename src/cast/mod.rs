@@ -213,6 +213,8 @@ pub struct Status {
     /// HTTP port of the DIAL server.
     pub dial_port: Option<u16>,
     pub error: Option<String>,
+    /// Why phones cannot find the running receiver right now, if they cannot.
+    pub discovery_error: Option<String>,
 }
 
 struct Inner {
@@ -281,6 +283,9 @@ impl Cast {
         });
         if let Some(e) = &s.error {
             v["error"] = json!(e);
+        }
+        if let Some(e) = &s.discovery_error {
+            v["discovery_error"] = json!(e);
         }
         v
     }

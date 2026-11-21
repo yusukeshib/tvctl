@@ -204,6 +204,8 @@ pub fn run(
         }
         player.tick();
         player.publish(cast);
+        let discovery_error = dial.discovery_error();
+        cast.update(|s| s.discovery_error = discovery_error);
     }
     cast.inner.lock().unwrap().commands = None;
     drop(poll);
