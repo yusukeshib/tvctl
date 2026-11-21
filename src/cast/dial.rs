@@ -19,11 +19,13 @@ const NOTIFY_EVERY: Duration = Duration::from_secs(600);
 /// How often the interface addresses are compared with the ones the SSDP
 /// socket joined the multicast group on.
 const CHECK_INTERFACES_EVERY: Duration = Duration::from_secs(5);
-/// The SSDP socket is recreated (joining the multicast group again) this
-/// often even when the addresses did not change: a long-running socket can
-/// silently stop receiving multicast after network changes (Wi-Fi reconnects,
-/// VPN interfaces coming and going) while a fresh one receives it.
-const REJOIN_EVERY: Duration = Duration::from_secs(60);
+/// How long the start-up check waits for its own multicast search.
+const PROBE_WAIT: Duration = Duration::from_secs(2);
+/// Header that marks the start-up check's own search.
+const PROBE_HEADER: &str = "X-TVCTL-PROBE";
+
+/// Why phones cannot find the receiver when macOS drops its multicast.
+pub const LOCAL_NETWORK_BLOCKED: &str = "macOS is blocking tvctl from the local network, so phones cannot find this Mac. In System Settings > Privacy & Security > Local Network, allow the app tvctl was started from (for example Terminal), then start the server again (tvctl server down; tvctl server up)";
 
 /// Handles `POST /apps/YouTube` with the request body.
 pub type LaunchFn = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
@@ -52,6 +54,9 @@ impl Dial {
         let ssdp = ssdp_socket(&addrs).context(
             "listening for SSDP on UDP port 1900 (is another program using it exclusively?)",
         )?;
+        if !addrs.is_empty() && !receives_own_multicast(&ssdp, &addrs)? {
+            anyhow::bail!(LOCAL_NETWORK_BLOCKED);
+        }
         let stop = Arc::new(AtomicBool::new(false));
         {
             let device = device.clone();
@@ -82,6 +87,53 @@ impl Drop for Dial {
 }
 
 // ---------- SSDP ----------
+
+/// Whether `socket` receives a search this process multicasts on `addrs`.
+/// macOS's Local Network privacy silently drops multicast (in both
+/// directions) for a process whose responsible app is not allowed; the socket
+/// then looks fine but never hears a phone.
+fn receives_own_multicast(socket: &UdpSocket, addrs: &[Ipv4Addr]) -> Result<bool> {
+    let nonce = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let msg = probe_message(&nonce);
+    let sender = UdpSocket::bind("0.0.0.0:0")?;
+    for ip in addrs {
+        let _ = socket2::SockRef::from(&sender).set_multicast_if_v4(ip);
+        let _ = sender.send_to(msg.as_bytes(), (SSDP_ADDR, SSDP_PORT));
+    }
+    let deadline = Instant::now() + PROBE_WAIT;
+    let mut buf = [0u8; 2048];
+    while Instant::now() < deadline {
+        if let Ok((n, _)) = socket.recv_from(&mut buf)
+            && probe_nonce(&String::from_utf8_lossy(&buf[..n])).as_deref() == Some(nonce.as_str())
+        {
+            return Ok(true);
+        }
+    }
+    super::trace(format_args!("SSDP: own multicast search did not arrive"));
+    Ok(false)
+}
+
+fn probe_message(nonce: &str) -> String {
+    format!(
+        "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\nST: tvctl:probe\r\n{PROBE_HEADER}: {nonce}\r\n\r\n"
+    )
+}
+
+/// The nonce of a start-up check's search, if `msg` is one.
+fn probe_nonce(msg: &str) -> Option<String> {
+    let (_, headers) = parse_ssdp(msg)?;
+    headers
+        .into_iter()
+        .find(|(k, _)| k == PROBE_HEADER)
+        .map(|(_, v)| v)
+}
 
 /// A socket bound to the SSDP port that joined the multicast group on each of
 /// `addrs` (or on the default interface when there are none).
@@ -217,23 +269,18 @@ fn serve_ssdp(
 ) {
     let mut last_notify: Option<Instant> = None;
     let mut last_check = Instant::now();
-    let mut last_join = Instant::now();
     let mut buf = [0u8; 2048];
     while !stop.load(Ordering::SeqCst) {
         if last_check.elapsed() >= CHECK_INTERFACES_EVERY {
             last_check = Instant::now();
             let now = interface_addrs();
-            let changed = now != addrs;
-            if changed || last_join.elapsed() >= REJOIN_EVERY {
-                last_join = Instant::now();
+            if now != addrs {
                 match ssdp_socket(&now) {
                     Ok(fresh) => {
                         socket = fresh;
-                        if changed {
-                            eprintln!("cast: network addresses changed to {now:?}; SSDP rejoined");
-                            // Announce on the new addresses right away.
-                            last_notify = None;
-                        }
+                        eprintln!("cast: network addresses changed to {now:?}; SSDP rejoined");
+                        // Announce on the new addresses right away.
+                        last_notify = None;
                         addrs = now;
                     }
                     Err(e) => eprintln!("cast: recreating the SSDP socket failed: {e:#}"),
@@ -515,6 +562,15 @@ mod tests {
             .is_none()
         );
         assert!(search_reply("NOTIFY * HTTP/1.1\r\nNT: x\r\n\r\n", "u-1", loc).is_none());
+    }
+
+    #[test]
+    fn probe_is_recognized_and_not_answered() {
+        let msg = probe_message("42-7");
+        assert_eq!(probe_nonce(&msg).as_deref(), Some("42-7"));
+        assert!(search_reply(&msg, "u-1", "http://x/").is_none());
+        let other = "M-SEARCH * HTTP/1.1\r\nST: ssdp:all\r\n\r\n";
+        assert_eq!(probe_nonce(other), None);
     }
 
     #[test]
