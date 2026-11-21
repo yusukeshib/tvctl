@@ -3,8 +3,8 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream, UdpSocket};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -19,9 +19,14 @@ const NOTIFY_EVERY: Duration = Duration::from_secs(600);
 /// How often the interface addresses are compared with the ones the SSDP
 /// socket joined the multicast group on.
 const CHECK_INTERFACES_EVERY: Duration = Duration::from_secs(5);
-/// How long the start-up check waits for its own multicast search.
+/// How long a check waits for its own multicast search.
 const PROBE_WAIT: Duration = Duration::from_secs(2);
-/// Header that marks the start-up check's own search.
+/// How often the running receiver checks that its own multicast search still
+/// arrives. A long-running SSDP socket can stop receiving multicast (seen on
+/// macOS after half an hour: unicast still arrives, a fresh socket in another
+/// process receives the same searches, and nothing is logged).
+const PROBE_EVERY: Duration = Duration::from_secs(30);
+/// Header that marks a check's own search.
 const PROBE_HEADER: &str = "X-TVCTL-PROBE";
 
 /// Why phones cannot find the receiver when macOS drops its multicast.
@@ -44,6 +49,8 @@ pub struct Device {
 pub struct Dial {
     stop: Arc<AtomicBool>,
     port: u16,
+    /// Why phones cannot find the receiver right now, if they cannot.
+    discovery_error: Arc<Mutex<Option<String>>>,
 }
 
 impl Dial {
@@ -58,6 +65,7 @@ impl Dial {
             anyhow::bail!(LOCAL_NETWORK_BLOCKED);
         }
         let stop = Arc::new(AtomicBool::new(false));
+        let discovery_error = Arc::new(Mutex::new(None));
         {
             let device = device.clone();
             let stop = stop.clone();
@@ -65,13 +73,24 @@ impl Dial {
         }
         {
             let stop = stop.clone();
-            std::thread::spawn(move || serve_ssdp(ssdp, addrs, &device, port, &stop));
+            let error = discovery_error.clone();
+            std::thread::spawn(move || serve_ssdp(ssdp, addrs, &device, port, &stop, &error));
         }
-        Ok(Dial { stop, port })
+        Ok(Dial {
+            stop,
+            port,
+            discovery_error,
+        })
     }
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Why phones cannot find the receiver right now (its own multicast
+    /// search stopped arriving even on a new socket), if they cannot.
+    pub fn discovery_error(&self) -> Option<String> {
+        self.discovery_error.lock().unwrap().clone()
     }
 }
 
@@ -93,6 +112,22 @@ impl Drop for Dial {
 /// directions) for a process whose responsible app is not allowed; the socket
 /// then looks fine but never hears a phone.
 fn receives_own_multicast(socket: &UdpSocket, addrs: &[Ipv4Addr]) -> Result<bool> {
+    let nonce = send_probe(addrs)?;
+    let deadline = Instant::now() + PROBE_WAIT;
+    let mut buf = [0u8; 2048];
+    while Instant::now() < deadline {
+        if let Ok((n, _)) = socket.recv_from(&mut buf)
+            && probe_nonce(&String::from_utf8_lossy(&buf[..n])).as_deref() == Some(nonce.as_str())
+        {
+            return Ok(true);
+        }
+    }
+    super::trace(format_args!("SSDP: own multicast search did not arrive"));
+    Ok(false)
+}
+
+/// Multicasts a check search on each of `addrs`; returns its nonce.
+fn send_probe(addrs: &[Ipv4Addr]) -> Result<String> {
     let nonce = format!(
         "{}-{}",
         std::process::id(),
@@ -107,17 +142,7 @@ fn receives_own_multicast(socket: &UdpSocket, addrs: &[Ipv4Addr]) -> Result<bool
         let _ = socket2::SockRef::from(&sender).set_multicast_if_v4(ip);
         let _ = sender.send_to(msg.as_bytes(), (SSDP_ADDR, SSDP_PORT));
     }
-    let deadline = Instant::now() + PROBE_WAIT;
-    let mut buf = [0u8; 2048];
-    while Instant::now() < deadline {
-        if let Ok((n, _)) = socket.recv_from(&mut buf)
-            && probe_nonce(&String::from_utf8_lossy(&buf[..n])).as_deref() == Some(nonce.as_str())
-        {
-            return Ok(true);
-        }
-    }
-    super::trace(format_args!("SSDP: own multicast search did not arrive"));
-    Ok(false)
+    Ok(nonce)
 }
 
 fn probe_message(nonce: &str) -> String {
@@ -266,11 +291,45 @@ fn serve_ssdp(
     device: &Device,
     port: u16,
     stop: &AtomicBool,
+    discovery_error: &Mutex<Option<String>>,
 ) {
     let mut last_notify: Option<Instant> = None;
     let mut last_check = Instant::now();
+    let mut last_probe = Instant::now();
+    // The check in flight: its nonce and when it was sent.
+    let mut probe: Option<(String, Instant)> = None;
+    // Failed checks in a row (the first recreates the socket).
+    let mut failures = 0u32;
     let mut buf = [0u8; 2048];
     while !stop.load(Ordering::SeqCst) {
+        if let Some((_, sent)) = &probe
+            && sent.elapsed() >= PROBE_WAIT
+        {
+            probe = None;
+            failures += 1;
+            if failures == 1 {
+                eprintln!("cast: SSDP stopped receiving multicast; recreating its socket");
+            } else {
+                let mut e = discovery_error.lock().unwrap();
+                if e.is_none() {
+                    eprintln!("cast: SSDP still receives no multicast after recreating its socket");
+                    *e = Some(LOCAL_NETWORK_BLOCKED.to_string());
+                }
+            }
+            match ssdp_socket(&addrs) {
+                Ok(fresh) => socket = fresh,
+                Err(e) => eprintln!("cast: recreating the SSDP socket failed: {e:#}"),
+            }
+            // Check the new socket right away.
+            last_probe = Instant::now() - PROBE_EVERY;
+        }
+        if probe.is_none() && !addrs.is_empty() && last_probe.elapsed() >= PROBE_EVERY {
+            last_probe = Instant::now();
+            match send_probe(&addrs) {
+                Ok(nonce) => probe = Some((nonce, Instant::now())),
+                Err(e) => super::trace(format_args!("SSDP check not sent: {e:#}")),
+            }
+        }
         if last_check.elapsed() >= CHECK_INTERFACES_EVERY {
             last_check = Instant::now();
             let now = interface_addrs();
@@ -295,6 +354,17 @@ fn serve_ssdp(
             continue;
         };
         let msg = String::from_utf8_lossy(&buf[..n]);
+        if let Some(nonce) = probe_nonce(&msg) {
+            if probe.as_ref().is_some_and(|(want, _)| *want == nonce) {
+                probe = None;
+                if failures > 0 {
+                    eprintln!("cast: SSDP receives multicast again");
+                }
+                failures = 0;
+                *discovery_error.lock().unwrap() = None;
+            }
+            continue;
+        }
         let Some(ip) = local_ip_toward(peer) else {
             continue;
         };
